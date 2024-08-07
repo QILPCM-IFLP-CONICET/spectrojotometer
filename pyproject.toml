@@ -35,11 +35,20 @@ bond_generator = "bin.bond_generator:main"
 evaluate_cc = "bin.evaluate_cc:main"
 visualbond = "bin.visualbond:main"
 
+
+
+
+
 [tool.setuptools.packages.find]
 where = ["."]
 
+[tool.setuptools.exclude-package-data]
+"your_package" = ["bin/*"]
+
 [tool.setuptools.package-data]
-"*" = ["spectrojotometer/doc/*.html", "logo.gif"]
+"*" = ["doc/*.html", "logo.gif"]
 
 [tool.setuptools]
 include-package-data = true
+
+

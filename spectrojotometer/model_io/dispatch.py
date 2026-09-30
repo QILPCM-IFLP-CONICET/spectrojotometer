@@ -11,10 +11,8 @@ for direct use and comparison, but it is no longer what
 `magnetic_model_from_file` -- and therefore the GUI and the
 command-line scripts -- actually calls for a `.cif` file.
 """
-from typing import Optional
 import importlib
 import logging
-
 
 from ..magnetic_model import MagneticModel
 from .common import DEFAULT_MAGNETIC_ATOMS
@@ -26,10 +24,10 @@ from .struct import magnetic_model_from_wk2_struct
 USE_PYMATGEN_CIF_READER = True
 
 if USE_PYMATGEN_CIF_READER and importlib.util.find_spec("pymatgen"):
+    from .model_io_pymatgen import magnetic_model_from_cif_pymatgen
     from .model_io_pymatgen import (
         magnetic_model_from_cif_pymatgen as magnetic_model_from_cif,
     )
-    from .model_io_pymatgen import magnetic_model_from_cif_pymatgen
 else:
     if USE_PYMATGEN_CIF_READER:
         logging.warning(
@@ -46,7 +44,7 @@ else:
 def magnetic_model_from_file(
     filename: str,
     magnetic_atoms: tuple = DEFAULT_MAGNETIC_ATOMS,
-    bond_names: Optional[list] = None,
+    bond_names: list | None = None,
     primitive_cell: bool = False,
 ) -> MagneticModel:
     """

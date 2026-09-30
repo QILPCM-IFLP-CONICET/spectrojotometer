@@ -42,16 +42,18 @@ from tkinter import (
     W,
     X,
     Y,
+    font,
+    messagebox,
+    ttk,
 )
 from tkinter import filedialog as fdlg
-from tkinter import font, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-# from importlib.resources import path as resource_filename
 
+# from importlib.resources import path as resource_filename
 from spectrojotometer import __path__ as spectrojotometer_path
 from spectrojotometer import __version__ as spectrojotometerversion
 from spectrojotometer.model_io import confindex, magnetic_model_from_file
@@ -153,7 +155,7 @@ class ApplicationGUI:
         self.build_page3()
         self.build_page4()
         # self.nb.pack(fill=BOTH)
-
+        self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         # Status region
         # Frame(height=5, bd=1, relief=SUNKEN).pack(fill=X, padx=5, pady=5)
         statusregion = Frame(paned_main_window, height=25, width=170)
@@ -193,6 +195,19 @@ class ApplicationGUI:
         sys.stdout = old_stdout
         logging.info("bye bye!")
 
+        
+    def _on_tab_changed(self, event):
+        try:
+            current = self.nb.tab(self.nb.select(), "text")
+        except tk.TclError:
+            return
+        # Cuando el usuario sale de "Define Model", sincronizamos
+        if current != "Define Model":
+            if (hasattr(self, "mc_tab") and self.mc_tab is not None
+                and self.mc_tab._auto_sync.get()
+                and self.current_model is not None):
+                self.mc_tab.refresh_couplings(self.current_model)
+        
 
         
     def buildmenus(self):
@@ -1243,7 +1258,11 @@ class ApplicationGUI:
         self.chis.insert(END, chitext)
         self.chis.config(state=DISABLED)
         self.plotbutton.config(state=NORMAL)
+        self.pages["page4"].refresh_couplings(self.model)
         self.nb.tab(self.pages["page4"], state="normal")
+                    
+
+        
 
     def flush(self):
         pass

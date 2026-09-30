@@ -1,14 +1,18 @@
-# coding: utf-8
 """
 Magnetic Model class
 """
-from typing import Optional
 import logging
+
 import numpy as np
 import numpy.linalg as la
 import numpy.random as rnd
 
-from .tools import box_ellipse, format_symmetry_operator, offset_orientation, pack_offset
+from .tools import (
+    box_ellipse,
+    format_symmetry_operator,
+    offset_orientation,
+    pack_offset,
+)
 
 # import matplotlib.pyplot as plt
 # from mpl_toolkits.mplot3d import Axes3
@@ -124,8 +128,8 @@ class MagneticModel:
         magnetic_species=None,
         onfly:bool=True,
         model_label="default",
-        g_lande_factors:Optional[float]=None,
-        spin_repr:Optional[float]=None,
+        g_lande_factors:float | None=None,
+        spin_repr:float | None=None,
         symmetries=None,
         space_group_symbol=None,
     ):
@@ -165,8 +169,7 @@ class MagneticModel:
             for p_vec in atomic_pos:
                 for q_vec in atomic_pos:
                     dist = np.linalg.norm(p_vec - q_vec)
-                    if dist > maxdist:
-                        maxdist = dist
+                    maxdist = max(maxdist, dist)
             if maxdist == 0:
                 maxdist = 1
             ranges = [[0, maxdist]]
@@ -394,13 +397,13 @@ class MagneticModel:
     def generate_configurations_onfly(self):
         """Generate spin configurations"""
         size = self.lattice_properties["cell_size"]
-        for c in range(2 ** ((size - 1))):
+        for c in range(2 ** (size - 1)):
             yield [c >> i & 1 for i in range(size - 1, -1, -1)]
 
     def generate_random_configurations(self, num_confs=10):
         """Generate spin configurations"""
         size = self.lattice_properties["cell_size"]
-        for s_val in np.random.random_integers(0, 2 ** ((size - 1)), num_confs):
+        for s_val in np.random.random_integers(0, 2 ** (size - 1), num_confs):
             yield [s_val >> i & 1 for i in range(size - 1, -1, -1)]
 
     def check_independence(self, conf, setconfs):

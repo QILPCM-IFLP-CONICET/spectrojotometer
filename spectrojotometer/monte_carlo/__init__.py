@@ -10,17 +10,17 @@ Por lo tanto los J del modelo ya estan en convencion Ising. Este modulo
 consume esos J sin reescalar.
 """
 from ._jit_kernels import HAS_NUMBA, warmup
+from .analysis import (
+    binder_crossing,
+    estimate_tc,
+    fit_curie_weiss,
+    frustration_factor,
+)
 from .frustration import detect_frustration
 from .ising_engine import IsingMonteCarlo
 from .parallel_tempering import ParallelTempering
-from .wolff import WolffCluster
-from .analysis import (
-    estimate_tc,
-    fit_curie_weiss,
-    binder_crossing,
-    frustration_factor,
-)
 from .runner import run_ising_mc
+from .wolff import WolffCluster
 
 __all__ = [
     "HAS_NUMBA",

@@ -27,9 +27,9 @@ from tkinter import (
     StringVar,
     Toplevel,
     X,
+    messagebox,
 )
 from tkinter import filedialog as fdlg
-from tkinter import messagebox
 from tkinter.scrolledtext import ScrolledText
 
 import numpy as np

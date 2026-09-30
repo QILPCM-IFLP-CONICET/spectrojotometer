@@ -1,13 +1,14 @@
 """Orquestador de alto nivel para Monte Carlo Ising."""
 
 import warnings
+
 import numpy as np
 
+from .analysis import estimate_tc, fit_curie_weiss, frustration_factor
 from .frustration import detect_frustration
 from .ising_engine import IsingMonteCarlo
 from .parallel_tempering import ParallelTempering
 from .wolff import WolffCluster
-from .analysis import estimate_tc, fit_curie_weiss, frustration_factor
 
 
 def run_ising_mc(spins, bonds, J_vals, E0,

@@ -39,12 +39,6 @@ etc.) keeps working unchanged.
 """
 import logging
 
-from .common import (
-    DEFAULT_MAGNETIC_ATOMS,
-    confindex,
-    read_bravais_vectors,
-    read_spin_configurations_file,
-)
 from .cif import (
     centering_letter_from_symbol,
     cif_read_loop_atoms,
@@ -62,8 +56,14 @@ from .cif import (
     primitive_vectors_from_symmetries,
     primitive_vectors_from_symmetries_reason,
 )
+from .common import (
+    DEFAULT_MAGNETIC_ATOMS,
+    confindex,
+    read_bravais_vectors,
+    read_spin_configurations_file,
+)
+from .dispatch import magnetic_model_from_cif_pymatgen, magnetic_model_from_file
 from .struct import magnetic_model_from_wk2_struct
-from .dispatch import magnetic_model_from_file, magnetic_model_from_cif_pymatgen
 
 logging.basicConfig(level=logging.INFO)
 

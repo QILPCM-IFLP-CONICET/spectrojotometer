@@ -3,10 +3,11 @@
 import json
 import queue
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 
+from .couplings_editor import CouplingsEditor
 from .mc_worker import MCWorker
 
 
@@ -35,9 +36,18 @@ class MonteCarloPanel(ttk.Frame):
         self.results = None
         self._plot_artists = {}
 
+        self._current_model = None
+        self._auto_sync = tk.BooleanVar(value=True)
         self._build_ui()
+        # Refresh inicial si el panel arranca con un modelo ya cargado
+        if get_model is not None:
+            try:
+                self.refresh_couplings(get_model())
+            except Exception:
+                pass
         self.after(100, self._poll_queue)
 
+        
     # ------------------------------------------------------------------
     # Construccion de UI
     # ------------------------------------------------------------------
@@ -106,6 +116,18 @@ class MonteCarloPanel(ttk.Frame):
             ttk.Radiobutton(f, text=opt, value=opt,
                             variable=self.var_algo).pack(anchor="w", padx=4)
 
+
+        # --- Editor de acoplamientos ---
+        self.editor = CouplingsEditor(parent, on_change=self._on_coupling_change)
+        self.editor.pack(fill="both", expand=True, pady=4)
+
+        # --- Auto-sync + Refresh ---
+        f = ttk.Frame(parent)
+        f.pack(fill="x", pady=(0, 4))
+        ttk.Checkbutton(f, text="Auto-sync",
+                        variable=self._auto_sync).pack(side="left")
+        ttk.Button(f, text="Refresh",
+                   command=self._on_manual_refresh).pack(side="right")            
         # --- Seed ---
         f = ttk.Frame(parent)
         f.pack(fill="x", pady=4)
@@ -128,7 +150,9 @@ class MonteCarloPanel(ttk.Frame):
     def _build_plots(self, parent):
         try:
             from matplotlib.backends.backend_tkagg import (
-                FigureCanvasTkAgg, NavigationToolbar2Tk)
+                FigureCanvasTkAgg,
+                NavigationToolbar2Tk,
+            )
             from matplotlib.figure import Figure
         except ImportError:
             ttk.Label(parent, text="matplotlib no disponible").pack()
@@ -163,13 +187,13 @@ class MonteCarloPanel(ttk.Frame):
     # ------------------------------------------------------------------
     # Callbacks de botones
     # ------------------------------------------------------------------
-
     def _on_run(self):
         if self.worker is not None and self.worker.is_alive():
             return
 
-        # Obtener modelo
-        model = self.get_model() if self.get_model is not None else None
+        model = self.get_model() if self.get_model is not None else self._current_model
+
+        # Si no hay modelo, chequear si tenemos datos directos
         if model is None and not hasattr(self, "_direct_data"):
             messagebox.showwarning(
                 "Monte Carlo",
@@ -178,6 +202,18 @@ class MonteCarloPanel(ttk.Frame):
             )
             return
 
+        # J overrides: leer del editor
+        J_overrides = None
+        if hasattr(self, "editor") and self.editor._rows:
+            J_overrides = self.editor.get_values()
+            if J_overrides is None:
+                messagebox.showerror(
+                    "Monte Carlo",
+                    "Hay valores de J invalidos en el editor. "
+                    "Corregilos antes de correr.",
+                )
+                return
+
         # Preparar datos Ising
         try:
             if hasattr(self, "_direct_data"):
@@ -185,12 +221,11 @@ class MonteCarloPanel(ttk.Frame):
             else:
                 from ..monte_carlo.adapter import magnetic_model_to_ising
                 adapter = self.adapter or magnetic_model_to_ising
-                print("adapter:", adapter)
                 supercell = (self.var_Lx.get(), self.var_Ly.get(),
                              self.var_Lz.get())
-                print("create adapter")
-                spins, bonds, J_vals, E0 = adapter(model, supercell)
-                print("done")
+                spins, bonds, J_vals, E0 = adapter(
+                    model, supercell, J_overrides=J_overrides,
+                )
         except Exception as e:
             messagebox.showerror("Monte Carlo",
                                  f"Error preparando el modelo:\n{e}")
@@ -385,3 +420,36 @@ class MonteCarloPanel(ttk.Frame):
         if isinstance(obj, tuple):
             return [MonteCarloPanel._serialize(x) for x in obj]
         return obj
+
+    # ------------------------------------------------------------------
+    # Sincronizacion de acoplamientos
+    # ------------------------------------------------------------------
+
+    def refresh_couplings(self, model=None):
+        """Recarga los acoplamientos desde el modelo y reconstruye el editor.
+
+        Se llama desde visualbond al apretar 'Estimar parametros' o al
+        salir de la pestana 'Define Model'. Tambien se puede llamar
+        manualmente desde el boton 'Refresh'.
+        """
+        if model is None:
+            if self.get_model is None:
+                return
+            model = self.get_model()
+        self._current_model = model
+        if model is None or not getattr(model, "bonds", None):
+            self.editor.set_couplings({})
+            return
+        self.editor.set_couplings(model.bonds, reset_baseline=True)
+
+    def _on_manual_refresh(self):
+        self.refresh_couplings()
+
+    def _on_coupling_change(self, name, value):
+        """Callback invocado por el editor al perder el foco."""
+        # Actualizamos el status bar para feedback
+        modified = self.editor.is_modified()
+        if modified:
+            self.var_status.set(f"J modificados manualmente (ultimo: {name}={value:+.4f})")
+        else:
+            self.var_status.set("J sincronizados con el modelo")    

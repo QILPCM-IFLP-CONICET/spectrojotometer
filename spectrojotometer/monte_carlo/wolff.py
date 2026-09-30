@@ -2,8 +2,8 @@
 
 import numpy as np
 
-from .ising_engine import IsingMonteCarlo
 from ._jit_kernels import _wolff_step_kernel
+from .ising_engine import IsingMonteCarlo
 
 
 class WolffCluster(IsingMonteCarlo):

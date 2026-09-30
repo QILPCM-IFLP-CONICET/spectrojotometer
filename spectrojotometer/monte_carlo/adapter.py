@@ -30,35 +30,38 @@ import numpy as np
 
 from ..tools import unpack_offset
 
-
 # ---------------------------------------------------------------------------
 # Extraccion de arrays desde model.bonds
 # ---------------------------------------------------------------------------
 
-def _extract_bond_arrays(model):
+
+def _extract_bond_arrays(model, J_overrides=None):
     """Extrae (bonds_cell, offset_cell, J_cell, n_sites) del model.bonds.
 
-    Returns
-    -------
-    bonds_cell : (M, 2) int64
-    offset_cell : (M, 3) int64
-    J_cell : (M,) float64
-    n_sites : int
+    Parameters
+    ----------
+    J_overrides : dict, opcional
+        {bond_name: J_value}. Sobrescribe el 'value' del modelo para
+        los tipos de bond listados. Los no listados usan el valor del
+        modelo.
     """
     bonds_dict = model.bonds
+    J_overrides = J_overrides or {}
 
     i_list, j_list = [], []
     off_list = []
     J_list = []
 
     for name, info in bonds_dict.items():
-        if "value" not in info:
+        if name in J_overrides:
+            J = float(J_overrides[name])
+        elif "value" in info:
+            J = float(info["value"])
+        else:
             raise KeyError(
-                f"El bond {name!r} no tiene clave 'value'. "
-                f"Claves disponibles: {list(info.keys())}"
+                f"El bond {name!r} no tiene clave 'value' y no esta "
+                f"en J_overrides. Claves disponibles: {list(info.keys())}"
             )
-        J = float(info["value"])
-        print(name,"=",J)
         for bond in info["bonds"]:
             if len(bond) != 3:
                 raise ValueError(
@@ -66,6 +69,7 @@ def _extract_bond_arrays(model):
                     "Se espera (i, j, tag)."
                 )
             i, j, tag = bond
+            tag = _normalize_tag(tag)
             off = unpack_offset(tag)
             i_list.append(int(i))
             j_list.append(int(j))
@@ -81,7 +85,6 @@ def _extract_bond_arrays(model):
         offset_cell = np.asarray(off_list, dtype=np.int64)
         J_cell = np.asarray(J_list, dtype=np.float64)
 
-    # n_sites de la celda unidad
     n_sites = getattr(model, "n_sites", None)
     if n_sites is None:
         n_sites = getattr(model, "natoms", None)
@@ -94,6 +97,20 @@ def _extract_bond_arrays(model):
         n_sites = int(bonds_cell.max()) + 1
 
     return bonds_cell, offset_cell, J_cell, int(n_sites)
+
+
+def _normalize_tag(tag):
+    """Normaliza un tag de offset.
+
+    Los CIF escriben las simetrias como 'N_XYZ' (p.ej. '1_100' para
+    identidad + traslacion +1 en a). El adapter solo necesita la parte
+    'XYZ' ('100' en el ejemplo). Si el tag no tiene prefijo 'N_', se
+    devuelve tal cual.
+    """
+    if isinstance(tag, str) and "_" in tag:
+        _, rest = tag.split("_", 1)
+        return rest
+    return tag
 
 
 # ---------------------------------------------------------------------------
@@ -165,13 +182,15 @@ def _tile_bonds(bonds_cell, offset_cell, J_cell, N_cell, supercell):
 # API publica
 # ---------------------------------------------------------------------------
 
-def magnetic_model_to_ising(model, supercell=(1, 1, 1)):
+def magnetic_model_to_ising(model, supercell=(1, 1, 1), J_overrides=None):
     """Extrae (spins, bonds, J_vals, E0) de un MagneticModel.
 
     Parameters
     ----------
     model : MagneticModel
     supercell : tuple(int, int, int)
+    J_overrides : dict, opcional
+        {bond_name: J_value}. Sobrescribe el 'value' del modelo.
 
     Returns
     -------
@@ -180,16 +199,16 @@ def magnetic_model_to_ising(model, supercell=(1, 1, 1)):
     J_vals : (M,) float64
     E0 : float
     """
-    bonds_cell, offset_cell, J_cell, n_sites = _extract_bond_arrays(model)
-
+    bonds_cell, offset_cell, J_cell, n_sites = _extract_bond_arrays(
+        model, J_overrides=J_overrides
+    )
     N, bonds, J_vals = _tile_bonds(
         bonds_cell, offset_cell, J_cell, n_sites, supercell
     )
-
     spins = np.ones(N, dtype=np.int8)
     E0 = float(getattr(model, "E0", 0.0))
-
     return spins, bonds, J_vals, E0
+
 
 
 # ---------------------------------------------------------------------------

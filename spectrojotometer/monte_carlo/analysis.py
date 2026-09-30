@@ -1,9 +1,8 @@
 """Analisis de resultados de Monte Carlo Ising."""
 
 import numpy as np
-from scipy.optimize import curve_fit
 from scipy.interpolate import interp1d
-from scipy.optimize import brentq
+from scipy.optimize import brentq, curve_fit
 
 
 def estimate_tc(T, chi):

@@ -1,6 +1,7 @@
 """Deteccion de frustration magnetica mediante balance de signos (Harary)."""
 
 from collections import deque
+
 import numpy as np
 
 

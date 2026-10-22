@@ -28,6 +28,43 @@ Changes
     environment and runs the installed commands.
 
 * Importing ``spectrojotometer.gui`` no longer opens a Tk window.
+* ``ApplicationGUI`` no longer enters the Tk event loop from its
+  constructor: call ``ApplicationGUI().run()``. The window can now be
+  built and driven in tests (``tests/test_gui.py``).
+* Choosing configurations, one consistent measure: the largest error of
+  each coupling per unit error in the energies.
+
+  * New ``MagneticModel.error_bounds(confs, method)``: exact, by linear
+    programming, or the closed-form ellipse bound (always larger, about a
+    thousand times faster). ``cost(confs)`` is now its maximum, exact.
+    Before, three different quantities were used (sqrt(N)/sigma_min of
+    the matrix with and without the base energy column), none of them
+    the actual error.
+  * ``optimize_independent_set`` and ``find_optimal_configurations``:
+    backward elimination plus exchanges, scored by the ellipse bound.
+    In tests on rings with 4-5 couplings, the chosen sets have 14-66%
+    smaller error bars for a given number of configurations. Without a
+    given number, the size is the smallest one that determines every
+    coupling, enlarged while each configuration reduces the bound by at
+    least 5% (``min_improvement``): about 30% fewer configurations, with
+    about 30% smaller errors, than before.
+  * When there is nothing new to add, the cost of the known set is
+    reported (it was ``inf``).
+  * ``optimize-configurations`` works again (stale attributes, swapped
+    return values, missing ``--known``), and chooses the number of
+    configurations automatically unless ``-n`` is given.
+
+* English names: ``coefficient_matrix(confs, centered=...)`` (was
+  ``normalizar``) and ``MagneticModel.remove_bond_by_name`` (was
+  ``remover_bond_by_name``). The old names still work, with a
+  ``DeprecationWarning``. The key ``"coord_atomos"`` of
+  ``site_properties`` is unchanged.
+* ``MagneticModel``: the constructor no longer modifies the
+  ``g_lande_factors`` and ``spin_repr`` lists it receives. Its
+  ``ranges`` and ``discretization`` arguments never had an effect and
+  are deprecated (use ``generate_bonds``). The constructor was split
+  into small helpers (complexity 26 -> 5), with tests that fix its
+  behaviour.
 
 * **Fixed** ``import spectrojotometer.model_io`` failing with
   ``AttributeError: module 'importlib' has no attribute 'util'`` in a

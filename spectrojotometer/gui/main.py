@@ -201,8 +201,13 @@ class ApplicationGUI:
         # Messages from the library and the GUI go to the status panel.
         self.log_panel = LogPanel(self.root, self.status)
         self.root.report_callback_exception = self.report_callback_exception
-        self.root.mainloop()
-        self.log_panel.close()
+
+    def run(self):
+        """Run the Tk event loop until the window is closed."""
+        try:
+            self.root.mainloop()
+        finally:
+            self.log_panel.close()
 
         
     def _on_tab_changed(self, event):
@@ -1146,7 +1151,7 @@ class ApplicationGUI:
                 + "Try increasing the energy tolerance.",
                 level=logging.WARNING,
             )
-            incopatibletxt = (
+            incompatible_text = (
                 textmarkers["open_comment"][fmt]
                 + " incompatible "
                 + textmarkers["close_comment"][fmt]
@@ -1166,7 +1171,7 @@ class ApplicationGUI:
                         + textmarkers["times_symbol"][fmt]
                         + " "
                         + show_number(jmax)
-                        + incopatibletxt
+                        + incompatible_text
                     )
                 else:
                     resparmtxt = (
@@ -1395,4 +1400,4 @@ class ApplicationGUI:
 
 
 if __name__ == "__main__":
-    ApplicationGUI()
+    ApplicationGUI().run()

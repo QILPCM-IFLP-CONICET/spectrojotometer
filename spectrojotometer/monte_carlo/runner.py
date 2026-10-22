@@ -1,4 +1,4 @@
-"""Orquestador de alto nivel para Monte Carlo Ising."""
+"""High-level driver of the Monte Carlo simulations of the Ising model."""
 
 import warnings
 
@@ -19,7 +19,37 @@ def run_ising_mc(spins, bonds, J_vals, E0,
                  seed=None,
                  swap_every=10,
                  progress_callback=None):
-    """... (docstring igual) ..."""
+    """
+    Simulate the Ising model H = E0 - sum_b J_b s_i s_j (s = +-1) at
+    n_temps temperatures, geometrically spaced between T_min and T_max
+    (in the units of J; Boltzmann constant 1).
+
+    spins, bonds, J_vals, E0: as returned by
+        monte_carlo.adapter.magnetic_model_to_ising (initial spins, the
+        pairs (i, j) of each bond, its coupling, and the base energy).
+    n_equil, n_sweeps: sweeps discarded at each temperature, and sweeps
+        averaged.
+    algorithm: "wolff" (cluster updates; only for unfrustrated models,
+        which are mapped onto ferromagnetic ones by a gauge transform),
+        "metropolis", "pt" (parallel tempering), or "auto": Wolff if the
+        model is not frustrated, Metropolis otherwise (with a warning).
+    n_restarts: Metropolis only, independent runs from random states;
+        a warning is issued if, at some temperature, their energies
+        differ by more than 5% of the energy scale of the model
+        (sum |J| / N).
+    seed: for reproducible results.
+    swap_every: parallel tempering only, sweeps between swaps.
+    progress_callback: called as progress_callback(done, total, message).
+
+    Returns a dict with lists, one value per temperature: "T", "E"
+    (energy per site), "M", "M2", "M4" (magnetization per site and its
+    moments), "chi", "chi_connected" (susceptibility), "C" (specific
+    heat), "U4" (Binder cumulant); and "algorithm", "N" (number of
+    sites), "frustrated", "frustration_cycle" (an odd cycle of frustrated
+    bonds, if any), "Tc_peak" (temperature of the peak of the connected
+    susceptibility), "curie_weiss" and "frustration_factor" (None with
+    fewer than three temperatures).
+    """
     spins = np.asarray(spins, dtype=np.int8)
     bonds = np.asarray(bonds, dtype=np.int64)
     J_vals = np.asarray(J_vals, dtype=np.float64)
@@ -38,15 +68,15 @@ def run_ising_mc(spins, bonds, J_vals, E0,
         algorithm = "metropolis" if frustrated else "wolff"
         if frustrated:
             warnings.warn(
-                "Modelo frustrado detectado "
-                f"(ciclo impar: {cycle[:6]}{'...' if cycle and len(cycle) > 6 else ''}). "
-                "Usando Metropolis. Para Tc preciso considerar algorithm='pt'.",
+                "Frustrated model detected "
+                f"(odd cycle: {cycle[:6]}{'...' if cycle and len(cycle) > 6 else ''}). "
+                "Using Metropolis. For an accurate Tc, consider algorithm='pt'.",
                 UserWarning,
             )
     elif algorithm == "wolff" and frustrated:
         raise ValueError(
-            "Wolff no es ergodico en sistemas frustrados. "
-            "Usar 'metropolis' o 'pt'."
+            "Wolff is not ergodic for frustrated models. "
+            "Use 'metropolis' or 'pt'."
         )
 
     T_grid = np.geomspace(T_min, T_max, n_temps)
@@ -91,7 +121,7 @@ def run_ising_mc(spins, bonds, J_vals, E0,
 
 
 def _sweep_with_progress(sim, T_grid, n_equil, n_sweeps, notify):
-    """Como sim.sweep_temperatures pero emitiendo progreso."""
+    """Like sim.sweep_temperatures, but reporting the progress."""
     keys = ["T", "M", "M2", "M4", "E", "chi", "chi_connected", "C", "U4"]
     results = {k: [] for k in keys}
     total = len(T_grid)
@@ -115,11 +145,12 @@ def _run_metropolis_with_restarts(spins, bonds, J_vals, E0, T_grid,
 
     accum = {k: np.zeros(len(T_grid)) for k in keys}
     accum["T"] = list(T_grid)
+    energies = np.zeros((n_restarts, len(T_grid)))  # per replica
 
     total_steps = n_restarts * len(T_grid)
     step = 0
 
-    for _ in range(n_restarts):
+    for replica in range(n_restarts):
         init = 2 * rng.integers(0, 2, size=spins.size).astype(np.int8) - 1
         sim = IsingMonteCarlo(init, bonds, J_vals, E0,
                               seed=int(rng.integers(0, 2**31 - 1)))
@@ -129,6 +160,7 @@ def _run_metropolis_with_restarts(spins, bonds, J_vals, E0, T_grid,
             obs = sim.sample(n_sweeps)
             for k in keys:
                 accum[k][t_idx] += obs[k]
+            energies[replica, t_idx] = obs["E"]
             step += 1
             if progress_callback is not None:
                 progress_callback(step, total_steps, f"T = {T:.3f}")
@@ -138,12 +170,18 @@ def _run_metropolis_with_restarts(spins, bonds, J_vals, E0, T_grid,
     accum["T"] = list(map(float, T_grid))
 
     if n_restarts > 1:
-        E_vals = np.array(accum["E"])
-        spread = (E_vals.max() - E_vals.min()) / max(abs(E_vals.mean()), 1e-12)
+        # Spread of the energies of the replicas at the same temperature
+        # (it compared the averaged energies of different temperatures),
+        # relative to the energy scale of the model: the largest possible
+        # energy per site, sum |J| / N. (Relative to the energy itself, any
+        # difference is large where the energy is close to 0.)
+        scale = max(float(np.sum(np.abs(J_vals))) / spins.size, 1e-12)
+        spread = np.max(energies.max(axis=0) - energies.min(axis=0)) / scale
         if spread > 0.05:
             warnings.warn(
-                f"Dispersion entre replicas ({spread:.1%}) sugiere "
-                "no-ergodicidad. Aumentar n_equil/n_sweeps o usar 'pt'.",
+                f"The energies of the replicas differ by {spread:.1%} of the "
+                "energy scale of the model: the sampling may not be ergodic. "
+                "Increase n_equil / n_sweeps, or use algorithm='pt'.",
                 UserWarning,
             )
     return accum

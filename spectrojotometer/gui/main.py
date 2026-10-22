@@ -201,24 +201,24 @@ class ApplicationGUI:
         # Messages from the library and the GUI go to the status panel.
         self.log_panel = LogPanel(self.root, self.status)
         self.root.report_callback_exception = self.report_callback_exception
-        self.root.mainloop()
-        self.log_panel.close()
 
-        
-    def _on_tab_changed(self, event):
+    def run(self):
+        """Run the Tk event loop until the window is closed."""
         try:
-            current = self.nb.tab(self.nb.select(), "text")
-        except tk.TclError:
-            return
-        # Cuando el usuario sale de "Define Model", sincronizamos
-        if current != "Define Model":
-            if (hasattr(self, "mc_tab") and self.mc_tab is not None
-                and self.mc_tab._auto_sync.get()
-                and self.current_model is not None):
-                self.mc_tab.refresh_couplings(self.current_model)
-        
+            self.root.mainloop()
+        finally:
+            self.log_panel.close()
 
         
+    def _on_tab_changed(self, event=None):
+        """Entering the Monte Carlo tab with auto-sync on: show the
+        couplings of the model in its table."""
+        panel = self.pages.get("page4")
+        if panel is None or self.model is None:
+            return
+        if self.nb.select() == str(panel) and panel._auto_sync.get():
+            panel.refresh_couplings(self.model)
+
     def buildmenus(self):
         self.root.bind_all("<Control-q>", self.close_app)
         self.root.bind_all("<Control-y>", self.call_redo)
@@ -983,8 +983,18 @@ class ApplicationGUI:
         energs = [self.configurations[0][full_labels.index(label)] for label in labels]
         # self.configs=([float("nan") for i in newconfs], newconfs, labels)
         # eq_format = self.outputformat.get().lower()
+        eqformat = self.outputformat.get().lower()
         self.spinconfigs.insert(END, "\n#  Subset of optimal configurations. ")
-        self.spinconfigs.insert(END, "sqrt(l)/||A^-1|| " + str(cn) + ": \n")
+        self.spinconfigs.insert(
+            END,
+            " |"
+            + textmarkers["Delta_symbol"][eqformat]
+            + "J|/|"
+            + textmarkers["Delta_symbol"][eqformat]
+            + "E| < "
+            + str(cn)
+            + ": \n",
+        )
         for idx, nc in enumerate(newconfs):
             row = (
                 "# "
@@ -1146,7 +1156,7 @@ class ApplicationGUI:
                 + "Try increasing the energy tolerance.",
                 level=logging.WARNING,
             )
-            incopatibletxt = (
+            incompatible_text = (
                 textmarkers["open_comment"][fmt]
                 + " incompatible "
                 + textmarkers["close_comment"][fmt]
@@ -1166,7 +1176,7 @@ class ApplicationGUI:
                         + textmarkers["times_symbol"][fmt]
                         + " "
                         + show_number(jmax)
-                        + incopatibletxt
+                        + incompatible_text
                     )
                 else:
                     resparmtxt = (
@@ -1395,4 +1405,4 @@ class ApplicationGUI:
 
 
 if __name__ == "__main__":
-    ApplicationGUI()
+    ApplicationGUI().run()

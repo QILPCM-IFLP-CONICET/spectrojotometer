@@ -2,6 +2,7 @@
 Magnetic Model class
 """
 import logging
+import warnings
 
 import numpy as np
 import numpy.linalg as la
@@ -48,7 +49,7 @@ SYMBOLS = {
 }
 
 
-def supercell_iterator(supercell_size, coord_atomos, bravais_vectors):
+def supercell_iterator(supercell_size, atomic_positions, bravais_vectors):
     """Iterator over subcells in the supercell.
 
     supercell_size can be:
@@ -61,7 +62,7 @@ def supercell_iterator(supercell_size, coord_atomos, bravais_vectors):
 
     # If no bravais_vectors, the supercell is just the cell.
     if len(bravais_vectors) == 0:
-        yield ([], coord_atomos)
+        yield ([], atomic_positions)
         return
 
     # Normalise to a per-axis list, one entry per Bravais vector.
@@ -78,7 +79,7 @@ def supercell_iterator(supercell_size, coord_atomos, bravais_vectors):
     max_indx = n
     while True:
         offset = sum(coeff * v_b for coeff, v_b in zip(current, bravais_vectors))
-        yield (current[:], [site + offset for site in coord_atomos])
+        yield (current[:], [site + offset for site in atomic_positions])
         # Advance to next replica (mixed-radix counter)
         indx = 0
         while True:
@@ -92,17 +93,138 @@ def supercell_iterator(supercell_size, coord_atomos, bravais_vectors):
             indx += 1
 
 
-def build_supercell(supercell_size, coord_atomos, bravais_vectors):
+def build_supercell(supercell_size, atomic_positions, bravais_vectors):
     """Build a list of offsets for the supercell"""
 
     return np.array(
         [
             cell[1]
             for cell in supercell_iterator(
-                supercell_size, coord_atomos, bravais_vectors
+                supercell_size, atomic_positions, bravais_vectors
             )
         ]
     )
+
+
+
+def site_map(source, target, tol=0.1):
+    """
+    For each site of the target model, the index of the site of the source
+    model at the same position, up to a translation of the source lattice;
+    -1 if there is none within tol.
+
+    source, target: MagneticModel instances, with positions in the same
+    frame (Cartesian coordinates).
+    """
+    src_pos = np.asarray(source.site_properties["coord_atomos"], dtype=float)
+    tgt_pos = np.asarray(target.site_properties["coord_atomos"], dtype=float)
+    bravais = np.asarray(source.lattice_properties["bravais_vectors"], dtype=float)
+    result = []
+    for point in tgt_pos:
+        best, best_dist = -1, tol
+        for index, site in enumerate(src_pos):
+            diff = point - site
+            if bravais.size:
+                # Closest lattice vector: integer combination of the
+                # Bravais vectors (least squares, then rounded).
+                coeffs = np.linalg.lstsq(bravais.T, diff, rcond=None)[0]
+                diff = diff - bravais.T @ np.round(coeffs)
+            dist = np.linalg.norm(diff)
+            if dist < best_dist:
+                best, best_dist = index, dist
+        result.append(best)
+    return result
+
+
+def map_configurations(source, confs, target, tol=0.1, fill=None):
+    """
+    Translate spin configurations of the source model into configurations
+    of the target model, using site_map: each site of the target takes the
+    spin of the source site at the same position.
+
+    Raises ValueError if some site of the target has no counterpart in the
+    source, unless fill (0 or 1) is given: then those sites take that
+    value. Also if a configuration does not have one value per site of the
+    source model.
+    """
+    mapping = site_map(source, target, tol)
+    missing = [i for i, j in enumerate(mapping) if j < 0]
+    if missing and fill is None:
+        raise ValueError(
+            f"sites {missing} of the target model have no counterpart in the "
+            f"source model (tolerance {tol})"
+        )
+    num_sites = len(source.site_properties["coord_atomos"])
+    result = []
+    for conf in confs:
+        if len(conf) != num_sites:
+            raise ValueError(
+                f"configuration {conf} has {len(conf)} values; the source "
+                f"model has {num_sites} sites"
+            )
+        result.append([conf[j] if j >= 0 else fill for j in mapping])
+    return result
+
+
+def _clamp_supercell_size(supercell_size):
+    """An int, or one value per axis; each clamped to 1..4."""
+    logger.debug("supercell size: %s", supercell_size)
+    if np.isscalar(supercell_size):
+        return min(4, max(1, int(supercell_size)))
+    return [min(4, max(1, int(size))) for size in supercell_size]
+
+
+def _per_site_values(values, num_sites, default):
+    """
+    A new list of floats with one value per site. ``None`` gives the
+    default for every site; a "." entry (CIF for "not given") gives the
+    default for that site.
+    """
+    if values is None:
+        return [default] * num_sites
+    return [default if value == "." else float(value) for value in values]
+
+
+def _bonds_dict(bond_lists, bond_names, bond_distances):
+    """
+    The ``bonds`` dict: name -> {"distance": ..., "bonds": [...],
+    "value": ...}. The value of each coupling is np.nan until it is
+    estimated (see MagneticModel.compute_couplings).
+    """
+    if bond_lists is None:
+        return {}
+    logger.debug("got %d couplings", len(bond_lists))
+    if bond_distances is None:
+        bond_distances = [0] * len(bond_lists)
+    elif len(bond_distances) != len(bond_lists):
+        raise ValueError(
+            "bond_distances must have the same length as bond_lists "
+            f"({len(bond_distances)} != {len(bond_lists)})"
+        )
+    if bond_names is None:
+        bond_names = ["J" + str(i) for i in range(len(bond_lists))]
+    return {
+        name: {"distance": distance, "bonds": bonds, "value": np.nan}
+        for name, distance, bonds in zip(bond_names, bond_distances, bond_lists)
+    }
+
+
+def _ellipse_error_bounds(centered_coeffs):
+    """
+    sqrt(N) * sqrt([(Ac^T Ac)^+]_kk) for each column k of the centered
+    coefficients Ac (N rows); np.inf for the couplings Ac does not
+    determine (column k outside its row space).
+    """
+    centered_coeffs = np.asarray(centered_coeffs, dtype=float)
+    num_rows, num_cols = centered_coeffs.shape
+    if num_rows == 0 or num_cols == 0:
+        return np.full(num_cols, np.inf)
+    _, sv, vh = np.linalg.svd(centered_coeffs, full_matrices=False)
+    rank = int(np.sum(sv > 1.0e-6))
+    vh, sv = vh[:rank], sv[:rank]
+    determined = np.linalg.norm(vh, axis=0) > 1.0 - 1.0e-6
+    widths = np.sqrt(num_rows) * np.linalg.norm(vh / sv[:, None], axis=0)
+    return np.where(determined, widths, np.inf)
 
 
 class MagneticModel:
@@ -126,104 +248,70 @@ class MagneticModel:
         bond_distances=None,
         ranges=None,
         supercell_size=1,
-        discretization:float=0.02,
+        discretization=None,
         magnetic_species=None,
-        onfly:bool=True,
+        onfly: bool = True,
         model_label="default",
-        g_lande_factors:float | None=None,
-        spin_repr:float | None=None,
+        g_lande_factors: list | None = None,
+        spin_repr: list | None = None,
         symmetries=None,
         space_group_symbol=None,
     ):
+        """
+        Parameters
+        ----------
+        atomic_pos : list of arrays, positions of the magnetic sites.
+        bravais_lat : list of arrays, Bravais vectors.
+        bond_lists, bond_names, bond_distances : the couplings, as lists of
+            bonds ``(src, dest, offset)``, with their names (default
+            ``J0, J1, ...``) and distances (default 0).
+        supercell_size : int or [sx, sy, sz], each value clamped to 1..4.
+        magnetic_species : names of the species (default "X").
+        g_lande_factors, spin_repr : per site values (default 2.0 and 1/2);
+            strings are accepted, with "." meaning "not given". The given
+            lists are not modified.
+        symmetries, space_group_symbol : how the model was built, kept for
+            save_cif and for information.
+        ranges, discretization : deprecated, ignored. Use generate_bonds.
+        """
+        if ranges is not None or discretization is not None:
+            warnings.warn(
+                "The ranges and discretization arguments of MagneticModel "
+                "have no effect; call generate_bonds(ranges, discretization) "
+                "to generate the bonds.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self.model_label = model_label
         self.onfly = onfly
         self.cell_size = 0
-        logger.debug("supercell size: %s", supercell_size)
-        # Normalise: accept int or [sx, sy, sz]; clamp each axis to 1–4
-        if np.isscalar(supercell_size):
-            supercell_size = min(4, max(1, int(supercell_size)))
-        else:
-            supercell_size = [min(4, max(1, int(s))) for s in supercell_size]
-
+        num_sites = len(atomic_pos)
         logger.debug("atomic positions: %s", atomic_pos)
+
         if magnetic_species is None:
-            magnetic_species = ["X"] * len(atomic_pos)
-
+            magnetic_species = ["X"] * num_sites
         logger.debug("magnetic species: %s", magnetic_species)
+        num_species = len(magnetic_species)
 
-        if g_lande_factors is None:
-            g_lande_factors = [2.0] * len(magnetic_species)
-        else:
-            g_str:str
-            indx:int
-            for indx, g_str in enumerate(g_lande_factors):
-                g_lande_factors[indx] = 2.0 if g_str == "." else float(g_str)
-
-        if spin_repr is None:
-            spin_repr = [0.5 for i in magnetic_species]
-        else:
-            for indx, s_max in enumerate(spin_repr):
-                spin_repr[indx] = 0.5 if s_max == "." else float(s_max)
-
-        if ranges is None:
-            maxdist = 0
-            dist = 0
-            for p_vec in atomic_pos:
-                for q_vec in atomic_pos:
-                    dist = np.linalg.norm(p_vec - q_vec)
-                    maxdist = max(maxdist, dist)
-            if maxdist == 0:
-                maxdist = 1
-            ranges = [[0, maxdist]]
-        elif np.isscalar(ranges):
-            ranges = [[0, float(ranges)]]
-        elif len(ranges) > 0 and np.isscalar(ranges[0]):
-            ranges = [list(ranges)]
-
-        if bond_lists is not None:
-            logger.debug("got %d couplings", len(bond_lists))
-            if bond_distances is None:
-                bond_distances = [0] * len(bond_lists)
-            elif len(bond_distances) != len(bond_lists):
-                raise ValueError(
-                    "bond_distances must have the same length as bond_lists "
-                    f"({len(bond_distances)} != {len(bond_lists)})"
-                )
-            if bond_names is None:
-                bond_names = ["J" + str(i) for i in range(len(bond_lists))]
-        else:
-            bond_names = []
-            bond_lists = []
-            bond_distances = []
-
-        self.site_properties = site_properties = {}
-        site_properties["coord_atomos"] = atomic_pos
-        site_properties["g_lande_factors"] = g_lande_factors
-        site_properties["spin_repr"] = spin_repr
-        site_properties["magnetic_species"] = magnetic_species
-
-        self.lattice_properties = lattice_properties = {}
-        lattice_properties["bravais_vectors"] = bravais_lat
-        lattice_properties["cell_size"] = len(atomic_pos)
-        lattice_properties["supercell_size"] = supercell_size
-        # Symmetry operators actually used to build this model (empty for a
-        # plain P1 description). Kept mainly so `save_cif` can write a
-        # faithful CIF back out instead of always collapsing to P1, and so
-        # downstream tools (e.g. the web interface) can tell how the model
-        # was built.
-        lattice_properties["symmetries"] = (
-            list(symmetries) if symmetries is not None else []
-        )
-        lattice_properties["space_group_symbol"] = space_group_symbol
-
-        self.bonds = {
-            b_name: {"distance": b_distance, "bonds": b_list, "value":np.nan}
-            for b_name, b_distance, b_list in zip(
-                bond_names, bond_distances, bond_lists
-            )
+        self.site_properties = {
+            "coord_atomos": atomic_pos,
+            "g_lande_factors": _per_site_values(g_lande_factors, num_species, 2.0),
+            "spin_repr": _per_site_values(spin_repr, num_species, 0.5),
+            "magnetic_species": magnetic_species,
         }
+        self.lattice_properties = {
+            "bravais_vectors": bravais_lat,
+            "cell_size": num_sites,
+            "supercell_size": _clamp_supercell_size(supercell_size),
+            # Symmetry operators used to build this model (empty for a plain
+            # P1 description). Kept so that save_cif can write a faithful
+            # CIF, and so that other tools can tell how it was built.
+            "symmetries": list(symmetries) if symmetries is not None else [],
+            "space_group_symbol": space_group_symbol,
+        }
+        self.bonds = _bonds_dict(bond_lists, bond_names, bond_distances)
 
-    def remover_bond_by_name(self, name):
+    def remove_bond_by_name(self, name):
         """
         Remove the bond with name <name>
         """
@@ -234,7 +322,14 @@ class MagneticModel:
             logger.warning(msg)
             return
 
-    remove_bond_by_name = remover_bond_by_name
+    def remover_bond_by_name(self, name):
+        """Deprecated: use remove_bond_by_name."""
+        warnings.warn(
+            "remover_bond_by_name is deprecated; use remove_bond_by_name",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.remove_bond_by_name(name)
 
     def generate_bonds(self, discretization, ranges, bond_names=None):
         """
@@ -246,7 +341,7 @@ class MagneticModel:
         """
         atom_type = self.site_properties["magnetic_species"]
         cell_size = self.lattice_properties["cell_size"]
-        coord_atomos = self.site_properties["coord_atomos"]
+        atomic_positions = self.site_properties["coord_atomos"]
         supercell_size = self.lattice_properties["supercell_size"]
         bonds = self.bonds
 
@@ -266,10 +361,10 @@ class MagneticModel:
         new_bonds = {}
         for supercell_idx, sites_sc in supercell_iterator(
             supercell_size,
-            coord_atomos,
+            atomic_positions,
             self.lattice_properties["bravais_vectors"],
         ):
-            for i, pos_i in enumerate(coord_atomos):
+            for i, pos_i in enumerate(atomic_positions):
                 for j, pos_j in enumerate(sites_sc):
                     logger.debug("pair %s, supercell %s", [i, j], supercell_idx)
                     rel_pos = pos_j - pos_i
@@ -307,7 +402,11 @@ class MagneticModel:
                 else:
                     bonds[name]["bonds"].extend(new_bonds[dist_type])
                     continue
-            bonds[name] = {"distance": dist, "bonds": new_bonds[dist_type]}
+            bonds[name] = {
+                "distance": dist,
+                "bonds": new_bonds[dist_type],
+                "value": np.nan,
+            }
 
     def formatted_equations(
         self, coeff_matrix, ensname=None, comments=None, eq_format="plain"
@@ -365,12 +464,25 @@ class MagneticModel:
         print("\n\n# Equations: \n============\n\n")
         print(self.formatted_equations(coeff_matrix, ensname, comments, eq_format))
 
-    def coefficient_matrix(self, configs, normalizar=False):
+    def coefficient_matrix(self, configs, centered=False, normalizar=None):
         """
         Return the matrix defining the equation system
         connecting coupling constants with simulated energies
         for a given set of configurations configs.
+
+        If centered is True, the column of each coupling is shifted to
+        zero average, which makes it orthogonal to the last (constant)
+        column, the one of the base energy. normalizar is the deprecated
+        name of centered.
         """
+        if normalizar is not None:
+            warnings.warn(
+                "the normalizar argument of coefficient_matrix is deprecated; "
+                "use centered",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            centered = normalizar
         logger.debug("compute the coefficient matrix")
 
         rawcm = [
@@ -384,7 +496,7 @@ class MagneticModel:
         ]
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug("raw coefficient matrix:\n%s", "\n".join(str(row) for row in rawcm))
-        if normalizar:
+        if centered:
             coeff_matrix = [v - np.average(v) for v in rawcm]
         else:
             coeff_matrix = rawcm
@@ -455,127 +567,182 @@ class MagneticModel:
         logger.debug("independent confs: %s", res)
         return res
 
-    def cost(self, confs):
+    def error_bounds(self, confs, method="exact"):
         """
-        This function evaluates a bound on the error associated
-        to a set of configurations.
+        Largest error of each coupling constant per unit error in the
+        energies, for the set of configurations confs.
+
+        If every energy is known within a tolerance t, the coupling J_k is
+        known within t * error_bounds(confs)[k]: these are the half widths
+        of the box containing the compatibility region (see
+        compute_couplings) for zero residual and unit tolerance. They are a
+        property of the configurations alone, so they can be computed
+        before the energies.
+
+        method:
+            "exact": by linear programming (the base energy is a free
+                parameter). Never increases when configurations are added.
+            "ellipse": the bound from the ellipsoid that contains the
+                region, sqrt(N) * sqrt([(Ac^T Ac)^-1]_kk), with Ac the
+                centered coefficients of the couplings. Closed form, about a
+                thousand times faster, and always >= the exact value.
+
+        Returns an array with one entry per coupling, in the order of
+        self.bonds; np.inf for couplings the configurations do not
+        determine.
         """
-        a = self.coefficient_matrix(confs, False)
-        lp = len(a)
-        sv = np.linalg.svd(a, full_matrices=False, compute_uv=False)[-1]
-        return np.sqrt(lp) / sv
-
-    def optimize_independent_set(self, confs, length=None, forced=None, tol=1.0e-6):
-        """
-        Given a set of configurations confs, returns
-
-        (res, cost)
-
-        where res is the subset of configurations (not including the forced
-        ones) that optimizes the cost function
-        sqrt(len(res) + len(forced)) / sigma_min(coefficient_matrix).
-
-        If the optional parameter length is provided, then it tries to optimize
-        the cost function for a fixed size length (the set may be enlarged
-        if that is needed to recover the full rank of the information).
-
-        If the set only provides partial information, the cost is np.inf.
-        """
+        num_bonds = len(self.bonds)
         if len(confs) == 0:
-            return [], np.inf
+            return np.full(num_bonds, np.inf)
+        coeffs = self.coefficient_matrix(confs, centered=True)
+        if method == "ellipse":
+            return _ellipse_error_bounds(coeffs[:, :num_bonds])
+        if method != "exact":
+            raise ValueError(f"unknown method {method!r}")
+        lower, upper = compatibility_box(coeffs, np.zeros(len(confs)), 1.0)
+        return 0.5 * (upper - lower)[:num_bonds]
 
+    def cost(self, confs, method="exact"):
+        """
+        Largest error of a coupling constant per unit error in the energies
+        (the maximum of error_bounds): if every energy is known within t,
+        no coupling has an error larger than t * cost(confs). np.inf if the
+        configurations do not determine all the couplings.
+        """
+        bounds = self.error_bounds(confs, method)
+        return float(np.max(bounds)) if len(bounds) else 0.0
+
+    def _select_configurations(self, candidates, forced, length, min_improvement):
+        """
+        Choose configurations among candidates, after the forced ones,
+        scored by the maximal ellipse error bound (see error_bounds).
+
+        1. Backward elimination: starting from every candidate, remove one
+           at a time the one whose removal hurts the score least. This
+           gives a good set for each size, down to the smallest one that
+           determines every coupling.
+        2. The size: length new configurations if given (or the smallest
+           size that determines every coupling, if larger); otherwise the
+           smallest size, enlarged while each extra configuration reduces
+           the score by at least min_improvement (a fraction).
+        3. Exchange (Fedorov): replace a chosen configuration by one left
+           out while that improves the score.
+
+        Returns (chosen, score): the chosen candidates and their score
+        (np.inf if the candidates do not determine every coupling).
+        """
+        num_bonds = len(self.bonds)
+        num_forced = len(forced)
+        rows = self.coefficient_matrix(forced + candidates, False)[:, :num_bonds]
+        forced_idx = list(range(num_forced))
+        all_candidates = list(range(num_forced, len(rows)))
+
+        def bounds(indices):
+            if len(indices) == 0:
+                return np.full(num_bonds, np.inf)
+            sub = rows[indices]
+            return _ellipse_error_bounds(sub - sub.mean(axis=0))
+
+        def score(chosen):
+            if num_bonds == 0:
+                return 0.0
+            return float(np.max(bounds(forced_idx + chosen)))
+
+        def result(chosen):
+            return [candidates[i - num_forced] for i in chosen]
+
+        full_score = score(all_candidates)
+        if not np.isfinite(full_score):
+            # Partial information: return what determines most couplings.
+            return result(all_candidates), np.inf
+
+        # 1. Backward elimination, keeping the best set of each size.
+        current = list(all_candidates)
+        path = {len(current): (list(current), full_score)}
+        while current:
+            best = None
+            for i in current:
+                trial = [j for j in current if j != i]
+                trial_score = score(trial)
+                if best is None or trial_score < best[1]:
+                    best = (trial, trial_score)
+            if not np.isfinite(best[1]):
+                break  # removing any configuration loses information
+            current = best[0]
+            path[len(current)] = (list(current), best[1])
+        min_size = min(path)
+
+        # 2. The size.
+        if length is not None:
+            size = min(max(length, min_size), max(path))
+        else:
+            size = min_size
+            while size + 1 in path and path[size + 1][1] <= (
+                1.0 - min_improvement
+            ) * path[size][1]:
+                size += 1
+        chosen, chosen_score = path[size]
+
+        # 3. Exchanges.
+        improved = True
+        while improved:
+            improved = False
+            for pos in range(len(chosen)):
+                for j in all_candidates:
+                    if j in chosen:
+                        continue
+                    trial = chosen[:pos] + [j] + chosen[pos + 1 :]
+                    trial_score = score(trial)
+                    if trial_score < chosen_score * (1.0 - 1.0e-9):
+                        chosen, chosen_score = trial, trial_score
+                        improved = True
+        return result(chosen), chosen_score
+
+    def optimize_independent_set(
+        self, confs, length=None, forced=None, tol=1.0e-6, min_improvement=0.05
+    ):
+        """
+        Choose, among confs, the configurations that best determine the
+        coupling constants, together with the forced (already known) ones.
+
+        Returns (res, cost): res are the chosen configurations (not
+        including the forced ones), and cost = self.cost(forced + res), the
+        largest error of a coupling per unit error in the energies (np.inf
+        if the information is partial; then res provides as much as
+        possible).
+
+        If length is given, res has length configurations (or more, if
+        they are needed to determine every coupling). Otherwise, it starts
+        from the minimal set that determines every coupling, and adds
+        configurations while each one reduces the error bound by at least
+        min_improvement (5% by default).
+
+        The choice is greedy, scored by the ellipse bound (see
+        error_bounds), which is fast and ranks sets very close to the exact
+        bound. tol is kept for backward compatibility.
+        """
         forced = list(forced) if forced is not None else []
-        lenforced = len(forced)
-
+        if len(confs) == 0:
+            # Nothing to choose from: the cost is the one of the forced set.
+            return [], self.cost(forced)
         candidates = [
             c
             for c in self.get_independent_confs(confs)
             if self.check_independence(c, forced)
         ]
         if not candidates:
-            return [], np.inf
-        curr = forced + candidates
-
-        a = self.coefficient_matrix(curr, False)
-        u, sv, _ = np.linalg.svd(a, full_matrices=False)
-        k = int(np.sum(sv > tol))  # numerical rank
-        if k == 0:
-            logger.info(
-                "optimize_independent_set: the set of configurations"
-                " does not provide any information."
-            )
-            return [], np.inf
-
-        # Compare with the number of unknowns (bonds + base energy).
-        partialinfo = k < a.shape[1]
-        if partialinfo:
-            logger.info(
-                "optimize_independent_set: the set of configurations just"
-                " provides partial information. "
-                "Optimizing the set for this information."
-            )
-        u = u[:, :k]
-
-        # Sort the non-forced configurations by leverage (row norm of U).
-        order = sorted(
-            range(lenforced, len(curr)), key=lambda i: -np.linalg.norm(u[i])
+            # Nothing new to add: the cost is the one of the forced set.
+            return [], self.cost(forced)
+        chosen, score = self._select_configurations(
+            candidates, forced, length, min_improvement
         )
-        curr_sorted = forced + [curr[i] for i in order]
-        a_new = a[order]  # non-forced rows, sorted by weight
-
-        def smin(rows):
-            """k-th singular value of the rows (0 if there are fewer)."""
-            s = np.linalg.svd(np.asarray(rows), full_matrices=False, compute_uv=False)
-            return s[k - 1] if len(s) >= k else 0.0
-
-        def result(npick):
-            return curr_sorted[lenforced : lenforced + npick]
-
-        ared = list(a[:lenforced])
-        if length is not None:
-            lp = min(max(length, 0), len(a_new))
-        else:
-            lp = min(max(k - lenforced, 0), len(a_new))
-        ared += list(a_new[:lp])
-
-        # Enlarge until the rank-k information is recovered.
-        s = smin(ared) if ared else 0.0
-        while s <= tol and lp < len(a_new):
-            ared.append(a_new[lp])
-            lp += 1
-            s = smin(ared)
-
-        if s <= tol or partialinfo:
+        if not np.isfinite(score):
             logger.info(
-                "Information is not complete. "
-                "Picking the subset that provides the maximal information."
+                "optimize_independent_set: the configurations do not determine "
+                "every coupling; returning the ones that provide most information."
             )
-            return result(lp), np.inf
-
-        if length is not None:
-            cost = np.sqrt(lp + lenforced) / s
-            logger.info("optimize_independent_set for fixed length. cost=%s", cost)
-            return result(lp), cost
-
-        # No length provided and complete information: enlarge the set
-        # while that reduces the cost function.
-        cost_full = np.sqrt(len(curr)) / sv[k - 1]
-        cost = np.sqrt(lp + lenforced) / s
-        while lp < len(a_new) and cost > cost_full:
-            ared.append(a_new[lp])
-            lp += 1
-            cost = np.sqrt(lp + lenforced) / smin(ared)
-
-        while lp < len(a_new):
-            s2 = smin(ared + [a_new[lp]])
-            new_cost = np.sqrt(lp + lenforced + 1) / s2 if s2 > 0 else np.inf
-            if new_cost >= cost:
-                break
-            cost = new_cost
-            ared.append(a_new[lp])
-            lp += 1
-
-        return result(lp), cost
+            return chosen, np.inf
+        return chosen, self.cost(forced + chosen)
 
     def find_optimal_configurations(
         self,
@@ -584,10 +751,21 @@ class MagneticModel:
         known=None,
         its=100,
         update_size=1,
+        min_improvement=0.05,
     ):
         """
-        Find an optimal set of configurations in order to estimate the
-        coupling constants with the best accuracy.
+        Search for a set of new configurations that, together with the known
+        ones, determines the coupling constants with the smallest errors.
+
+        Random configurations are proposed its times; each time the best
+        subset of the current ones plus the proposals is selected (see
+        optimize_independent_set). If num_new_confs is given, the sets have
+        that size; otherwise their size follows the same rule as in
+        optimize_independent_set: an extra configuration must reduce the
+        error bound by at least min_improvement.
+
+        Returns (configurations, cost), with cost = self.cost(known +
+        configurations), or np.inf if the information is partial.
         """
         if num_new_confs is None:
             lmax = max(len(self.bonds) + 1, 1) + update_size
@@ -618,23 +796,37 @@ class MagneticModel:
                 + "the subset and return it."
             )
             return self.optimize_independent_set(
-                last_better, num_new_confs, forced=known
+                last_better, num_new_confs, forced=known,
+                min_improvement=min_improvement,
             )
 
-        last_better, cost = self.optimize_independent_set(
-            last_better, num_new_confs, forced=known
-        )
+        # Sets of different sizes are compared with the same rule used to
+        # choose the size: score * (1 / (1 - min_improvement)) ** size.
+        penalty = 1.0 / (1.0 - min_improvement)
+
+        def select(pool):
+            candidates = [c for c in pool if self.check_independence(c, known)]
+            if not candidates:
+                return [], self.cost(known, method="ellipse")
+            chosen, score = self._select_configurations(
+                candidates, known, num_new_confs, min_improvement
+            )
+            if num_new_confs is None:
+                score = score * penalty ** len(chosen)
+            return chosen, score
+
+        last_better, score = select(last_better)
         for _ in range(its):
             repres = self.generate_random_configurations(update_size)
-            new_try = self.get_independent_confs(last_better + list(repres))
-            new_try, newcost = self.optimize_independent_set(
-                new_try, num_new_confs, forced=known
+            new_try, new_score = select(
+                self.get_independent_confs(last_better + list(repres))
             )
-            if newcost < cost:
-                cost = newcost
-                last_better = new_try
+            if new_score < score:
+                score, last_better = new_score, new_try
 
-        return last_better, cost
+        if not np.isfinite(score):
+            return last_better, np.inf
+        return last_better, self.cost(known + last_better)
 
     def compute_couplings(
         self,
@@ -695,28 +887,26 @@ class MagneticModel:
         Undetermined couplings are returned with js = 0 and deltaJ = nan.
         If the model is incompatible with the energies, all the entries
         of deltaJ are -1.
+
+        The estimated couplings are also stored in the model, as
+        self.bonds[name]["value"] (np.nan for undetermined couplings), so
+        that, e.g., a Monte Carlo simulation can use them.
         """
-        print("Efind jssss")
+
         if printeqs:
-            coeffs = self.coefficient_matrix(confs, normalizar=False)
+            coeffs = self.coefficient_matrix(confs, centered=False)
             print("\n# Configurations:\n=================\n")
             for c in confs:
                 print(c)
             self.print_equations(coeffs)
 
-        coeffs = self.coefficient_matrix(confs, normalizar=True)
+        coeffs = self.coefficient_matrix(confs, centered=True)
 
-        # The choice in the way the equation is written allows to decouple
-        # the determination of the coupling constants from the base
-        # energy. This implies that the condition number associated to the
-        # coupling constants should be evaluated from the reduced set of
-        # equations.
-        rcoeffs = coeffs[:, 0:-1]
-        singularvalues = np.linalg.svd(rcoeffs, compute_uv=False)
-        logger.debug("singular values of the coupling columns: %s", singularvalues)
-        cond_number = np.sqrt(len(rcoeffs)) / max(min(singularvalues), 1.0e-9)
         if printeqs:
-            print(f"\nInverse of the minimum singular value: {cond_number}\n")
+            print("\nLargest error of each coupling per unit error in the energies:")
+            for name, bound in zip(self.bonds, self.error_bounds(confs)):
+                print(f"   {name}: {bound}")
+            print()
 
         if method is None:
             method = (
@@ -724,16 +914,20 @@ class MagneticModel:
                 else ("montecarlo" if montecarlo else "ellipse")
             )
         if method == "montecarlo":
-            return self.montecarlo_box(
-                coeffs,
-                energs,
-                err_energs,
-                1000 if mcsteps is None else mcsteps,
-                mcsizefactor,
-                rng=rng,
+            return self._store_coupling_values(
+                self.montecarlo_box(
+                    coeffs,
+                    energs,
+                    err_energs,
+                    1000 if mcsteps is None else mcsteps,
+                    mcsizefactor,
+                    rng=rng,
+                )
             )
         if method == "exact":
-            return self.exact_box(coeffs, energs, err_energs)
+            return self._store_coupling_values(
+                self.exact_box(coeffs, energs, err_energs)
+            )
         if method != "ellipse":
             raise ValueError(f"unknown method {method!r}")
         # Otherwise, it gives an estimation in terms of the bigger ellipse.
@@ -749,13 +943,22 @@ class MagneticModel:
         else:
             rr = np.sqrt(rr) * err_energs
             deltaJ = box_ellipse(coeffs, rr)
-        # Update values of the coupling constants:
-        print("store values", js, "in", self.bonds.keys())
-        for j_label ,j_val in zip(self.bonds, js):
-            print(j_label,"->", j_val)
-            self.bonds[j_label]["value"]=j_val
+        return self._store_coupling_values((js, deltaJ, model_chi, 1.0))
 
-        return (js, deltaJ, model_chi, 1.0)
+    def _store_coupling_values(self, result):
+        """
+        Store the couplings estimated by compute_couplings in
+        self.bonds[name]["value"]: np.nan for the undetermined ones (nan
+        error bar). Returns result unchanged.
+        """
+        js, d_js = result[0], result[1]
+        for name, value, error in zip(self.bonds, js, d_js):
+            self.bonds[name]["value"] = float(value) if np.isfinite(error) else np.nan
+        logger.debug(
+            "stored coupling values: %s",
+            {name: bond["value"] for name, bond in self.bonds.items()},
+        )
+        return result
 
     def bound_inequalities(self, confs, energs, err_energs=0.01, rtol=1.0e-3):
         """
@@ -776,7 +979,7 @@ class MagneticModel:
         |A.(J - J_ls)|^2 <= N err^2 - |r|^2, which contains the
         compatibility region, onto the right singular vectors of A.
         """
-        coeffs = self.coefficient_matrix(confs, normalizar=True)
+        coeffs = self.coefficient_matrix(confs, centered=True)
         energs = np.asarray(energs, dtype=float)
         # The columns of the couplings are centered, so they are orthogonal
         # to the (constant) column of the base energy: the base energy
@@ -937,38 +1140,9 @@ class MagneticModel:
             js = 0.5 * (upper + lower)
             d_js = 0.5 * (upper - lower)
 
-        if len(jtrys) == 1:
-            print("errors  estimated by boxing the  ellipse")
-            rr = np.sqrt(numcalc * tol**2 - esqerr**2)
-            djs = box_ellipse(coeffs, rr)
-            return j0s, djs, (e0s - energs) / tol, 1.0 / (numtry + 1.0)
-        print(len(jtrys))
-        print("Accepted rate=", len(jtrys) / (numtry + 1.0))
-
-        j0s = np.average(jtrys, 0)
-        jtrys = [abs(js - j0s) for js in jtrys]
-        d_js = np.max(np.array(jtrys), 0)
-        # If the model is singular, discard the coefficients that
-        # couldn't be determined, setting them to 0.
-        if issingular:
-            for i, d_j in enumerate(d_js):
-                if d_j > 100:
-                    d_js[i] = np.nan
-                    j0s[i] = 0
-
-        e0s = coeffs.dot(j0s)
-
-        print("store values", j0s, "in", self.bonds.keys())
-        for j_label ,j_val in zip(self.bonds, j0s):
-            print(j_label,"->", j_val)
-            self.bonds[j_label]["value"]=j_val
-        
-        return (
-            j0s,
-            d_js,
-            (e0s - energs)[:numcalc] / tol,
-            len(jtrys) / (numtry + 1.0),
-        )
+        js[~determined] = 0.0
+        d_js = np.where(determined, d_js, np.nan)
+        return js, d_js, model_chi, rate
 
     def save_cif(self, filename, bond_names=None):
         """Save the model in a CIF file"""

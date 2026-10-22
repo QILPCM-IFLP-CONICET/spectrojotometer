@@ -1,5 +1,4 @@
 import itertools
-import os
 import subprocess
 import sys
 
@@ -8,7 +7,8 @@ import pytest
 
 from spectrojotometer.magnetic_model import MagneticModel
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from ._helpers import repo_env
+
 
 
 def ring_model(n_unknown_bonds=2):
@@ -112,7 +112,7 @@ def test_find_optimal_configurations_partial_info_is_reported():
 def test_compute_couplings_mcsteps_none():
     m = ring_model()
     confs = all_confs()
-    coeffs = m.coefficient_matrix(confs, normalizar=True)
+    coeffs = m.coefficient_matrix(confs, centered=True)
     energs = coeffs.dot(np.array([1.0, -0.5, 3.0]))
     js, dj, chi, rate = m.compute_couplings(confs, energs, err_energs=0.01)
     assert np.allclose(js[:2], [1.0, -0.5], atol=0.05)
@@ -157,7 +157,7 @@ def test_bond_keys_independent_of_hash_seed():
     )
     outs = set()
     for seed in ("0", "1", "2", "3", "4"):
-        env = dict(os.environ, PYTHONHASHSEED=seed, PYTHONPATH=ROOT)
+        env = repo_env(PYTHONHASHSEED=seed)
         r = subprocess.run(
             [sys.executable, "-c", code],
             env=env, capture_output=True, text=True, check=True,

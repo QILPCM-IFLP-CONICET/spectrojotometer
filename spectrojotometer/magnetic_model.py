@@ -875,7 +875,8 @@ class MagneticModel:
         If the model is incompatible with the energies, all the entries
         of deltaJ are -1.
         """
-        print("Efind jssss")
+        # print("Efind jssss")
+
         if printeqs:
             coeffs = self.coefficient_matrix(confs, centered=False)
             print("\n# Configurations:\n=================\n")

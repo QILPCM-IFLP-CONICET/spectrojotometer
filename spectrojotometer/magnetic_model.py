@@ -892,6 +892,8 @@ class MagneticModel:
         self.bonds[name]["value"] (np.nan for undetermined couplings), so
         that, e.g., a Monte Carlo simulation can use them.
         """
+        print("Efind jssss")
+
         if printeqs:
             coeffs = self.coefficient_matrix(confs, centered=False)
             print("\n# Configurations:\n=================\n")

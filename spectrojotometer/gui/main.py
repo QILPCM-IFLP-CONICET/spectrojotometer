@@ -210,20 +210,15 @@ class ApplicationGUI:
             self.log_panel.close()
 
         
-    def _on_tab_changed(self, event):
-        try:
-            current = self.nb.tab(self.nb.select(), "text")
-        except tk.TclError:
+    def _on_tab_changed(self, event=None):
+        """Entering the Monte Carlo tab with auto-sync on: show the
+        couplings of the model in its table."""
+        panel = self.pages.get("page4")
+        if panel is None or self.model is None:
             return
-        # Cuando el usuario sale de "Define Model", sincronizamos
-        if current != "Define Model":
-            if (hasattr(self, "mc_tab") and self.mc_tab is not None
-                and self.mc_tab._auto_sync.get()
-                and self.current_model is not None):
-                self.mc_tab.refresh_couplings(self.current_model)
-        
+        if self.nb.select() == str(panel) and panel._auto_sync.get():
+            panel.refresh_couplings(self.model)
 
-        
     def buildmenus(self):
         self.root.bind_all("<Control-q>", self.close_app)
         self.root.bind_all("<Control-y>", self.call_redo)
@@ -988,8 +983,18 @@ class ApplicationGUI:
         energs = [self.configurations[0][full_labels.index(label)] for label in labels]
         # self.configs=([float("nan") for i in newconfs], newconfs, labels)
         # eq_format = self.outputformat.get().lower()
+        eqformat = self.outputformat.get().lower()
         self.spinconfigs.insert(END, "\n#  Subset of optimal configurations. ")
-        self.spinconfigs.insert(END, "sqrt(l)/||A^-1|| " + str(cn) + ": \n")
+        self.spinconfigs.insert(
+            END,
+            " |"
+            + textmarkers["Delta_symbol"][eqformat]
+            + "J|/|"
+            + textmarkers["Delta_symbol"][eqformat]
+            + "E| < "
+            + str(cn)
+            + ": \n",
+        )
         for idx, nc in enumerate(newconfs):
             row = (
                 "# "

@@ -124,3 +124,95 @@ def test_example_energies_are_consistent():
     ]
     assert len(lines) >= 2
     assert all(np.isfinite(float(line.split()[0])) for line in lines)
+
+
+def test_import_configurations_from_another_model(app, monkeypatch):
+    """The import window: choose a model, compute the site map, map the
+    configurations and send them to the main window."""
+    from spectrojotometer.gui import importconfig
+
+    load_example(app, monkeypatch)
+    files = iter([str(EXAMPLES / "example1.cif"), str(EXAMPLES / "example1.spin")])
+    monkeypatch.setattr(importconfig.fdlg, "askopenfilename", lambda **k: next(files))
+    # The window is modal: do not wait for it to be closed.
+    monkeypatch.setattr(app.root, "wait_window", lambda *a: None)
+    window = importconfig.ImportConfigWindow(app)
+    try:
+        window.selected_model.set("[other model]")
+        window.onmodelselect()
+        size = len(app.model.site_properties["coord_atomos"])
+        assert window.dictatoms == list(range(size))
+        assert window.sitemap.get() == ", ".join(str(i) for i in range(size))
+
+        window.configs_from_file()
+        window.map_confs()
+        mapped = window.outputconfs.get("1.0", tkinter.END)
+        source = (EXAMPLES / "example1.spin").read_text()
+        for line in source.splitlines():
+            if line.strip() and not line.startswith("#"):
+                energy, rest = line.split(None, 1)
+                config = rest.split("#")[0].strip()
+                assert f"{float(energy)}\t{config}" in mapped
+
+        window.send_to_application()
+        assert "From " in app.spinconfigs.get("1.0", tkinter.END)
+    finally:
+        window.close_window()
+
+
+def set_page2(app, **values):
+    for field, value in values.items():
+        entry = app.parameters["page2"][field]
+        entry.delete(0, tkinter.END)
+        entry.insert(0, str(value))
+
+
+@pytest.mark.parametrize("fmt", ["plain", "LaTeX", "Wolfram"])
+def test_optimize_configs_reports_the_error_bound(app, monkeypatch, fmt):
+    load_example(app, monkeypatch)
+    app.outputformat.set(fmt)
+    set_page2(app, **{"Number of configurations": 2, "Iterations": 5, "Bunch size": 2})
+    app.optimize_configs()
+    text = app.spinconfigs.get("1.0", tkinter.END)
+    assert "J|/|" in text and "E| <" in text
+    assert not app.errors
+
+
+def test_optimal_independent_set_reports_the_error_bound(app, monkeypatch):
+    load_example(app, monkeypatch)
+    app.spinconfigs.insert(tkinter.END, (EXAMPLES / "example1.spin").read_text())
+    set_page2(app, **{"Number of configurations": 2})
+    app.optimal_independent_set()
+    text = app.spinconfigs.get("1.0", tkinter.END)
+    assert "Subset of optimal configurations" in text
+    assert "J|/|" in text and "sqrt(l)" not in text
+    assert not app.errors
+
+
+def test_monte_carlo_tab_uses_the_estimated_couplings(app, monkeypatch):
+    """After estimating the couplings in the main window, the table of the
+    Monte Carlo tab shows them."""
+    load_example(app, monkeypatch)
+    set_energies(app, (EXAMPLES / "example1.spin").read_text())
+    app.evaluate_couplings()
+    panel = app.pages["page4"]
+    panel.refresh_couplings()
+    values = panel.editor.get_values()
+    for name, bond in app.model.bonds.items():
+        assert values[name] == pytest.approx(bond["value"], rel=1e-5)
+
+
+def test_entering_the_monte_carlo_tab_syncs_the_couplings(app, monkeypatch):
+    load_example(app, monkeypatch)
+    panel = app.pages["page4"]
+    for bond in app.model.bonds.values():
+        bond["value"] = 0.75
+    app.nb.tab(panel, state="normal")
+    app.nb.select(panel)
+    app._on_tab_changed()
+    assert set(panel.editor.get_values().values()) == {0.75}
+    panel._auto_sync.set(False)
+    for bond in app.model.bonds.values():
+        bond["value"] = -2.0
+    app._on_tab_changed()
+    assert set(panel.editor.get_values().values()) == {0.75}

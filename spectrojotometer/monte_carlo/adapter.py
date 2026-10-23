@@ -1,6 +1,6 @@
-"""Adaptador de MagneticModel a la representacion Ising.
+"""From a MagneticModel to the arrays of the Ising simulation.
 
-Estructura esperada de model.bonds:
+Expected structure of model.bonds:
 
     {
         'nn1': {
@@ -11,19 +11,21 @@ Estructura esperada de model.bonds:
         ...
     }
 
-Cada elemento de 'bonds' es (i, j, tag). El tag codifica la imagen
-periodica del atomo j respecto del atomo i y se decodifica con
-spectrojotometer.tools.unpack_offset:
+Each element of 'bonds' is (i, j, tag). The tag is the lattice offset
+of the image of site j bonded to site i, as written by
+spectrojotometer.tools.pack_offset (and read by unpack_offset):
 
-    '.'      -> (0, 0, 0)         misma celda
-    '100'    -> (+1, 0, 0)        +1 en a
-    '900'    -> (-1, 0, 0)        -1 en a
-    '190'    -> (+1, -1, 0)
-    etc.
+    '.'       -> (0, 0, 0)         same cell
+    '1_100'   -> (+1, 0, 0)        +1 along a
+    '1_900'   -> (-1, 0, 0)        -1 along a
+    '1_190'   -> (+1, -1, 0)
 
-Los J del modelo ya estan en convencion Ising (el fit de Spectrojotometer
-proyecta el Hamiltoniano de Heisenberg sobre la base colineal y ajusta
-la parte diagonal). No se aplica ningun factor S^2.
+The whole tag must be decoded: without its '1_' prefix it means no
+offset. Tuples of three integers are accepted too.
+
+The couplings of the model are already in the Ising convention (the fit
+projects the Heisenberg Hamiltonian onto the collinear basis and fits its
+diagonal part): no S^2 factor is applied.
 """
 
 import numpy as np
@@ -31,19 +33,18 @@ import numpy as np
 from ..tools import unpack_offset
 
 # ---------------------------------------------------------------------------
-# Extraccion de arrays desde model.bonds
+# Arrays from model.bonds
 # ---------------------------------------------------------------------------
 
 
 def _extract_bond_arrays(model, J_overrides=None):
-    """Extrae (bonds_cell, offset_cell, J_cell, n_sites) del model.bonds.
+    """(bonds_cell, offset_cell, J_cell, n_sites) from model.bonds.
 
     Parameters
     ----------
-    J_overrides : dict, opcional
-        {bond_name: J_value}. Sobrescribe el 'value' del modelo para
-        los tipos de bond listados. Los no listados usan el valor del
-        modelo.
+    J_overrides : dict, optional
+        {bond_name: J_value}, replacing the 'value' of the model for the
+        couplings listed; the others use the value of the model.
     """
     bonds_dict = model.bonds
     J_overrides = J_overrides or {}
@@ -59,18 +60,22 @@ def _extract_bond_arrays(model, J_overrides=None):
             J = float(info["value"])
         else:
             raise KeyError(
-                f"El bond {name!r} no tiene clave 'value' y no esta "
-                f"en J_overrides. Claves disponibles: {list(info.keys())}"
+                f"The coupling {name!r} has no 'value' and is not in "
+                f"J_overrides. Available keys: {list(info.keys())}"
+            )
+        if not np.isfinite(J):
+            raise ValueError(
+                f"The coupling {name!r} has no value (J = {J}): estimate the "
+                "couplings first, or give its value in J_overrides."
             )
         for bond in info["bonds"]:
             if len(bond) != 3:
                 raise ValueError(
-                    f"Bond con formato inesperado: {bond!r}. "
-                    "Se espera (i, j, tag)."
+                    f"Unexpected bond format: {bond!r}. "
+                    "Expected (i, j, tag)."
                 )
             i, j, tag = bond
-            tag = _normalize_tag(tag)
-            off = unpack_offset(tag)
+            off = _offset_of(tag)
             i_list.append(int(i))
             j_list.append(int(j))
             off_list.append(off)
@@ -88,47 +93,57 @@ def _extract_bond_arrays(model, J_overrides=None):
     n_sites = getattr(model, "n_sites", None)
     if n_sites is None:
         n_sites = getattr(model, "natoms", None)
+    if n_sites is None and hasattr(model, "site_properties"):
+        # MagneticModel: every site counts, also the ones without bonds.
+        n_sites = len(model.site_properties["coord_atomos"])
     if n_sites is None:
         if bonds_cell.size == 0:
             raise ValueError(
-                "No se puede inferir n_sites: model no tiene 'n_sites' "
-                "ni 'natoms', y model.bonds esta vacio."
+                "Cannot infer n_sites: the model has no 'n_sites', "
+                "'natoms' or 'site_properties', and model.bonds is empty."
             )
         n_sites = int(bonds_cell.max()) + 1
 
     return bonds_cell, offset_cell, J_cell, int(n_sites)
 
 
-def _normalize_tag(tag):
-    """Normaliza un tag de offset.
-
-    Los CIF escriben las simetrias como 'N_XYZ' (p.ej. '1_100' para
-    identidad + traslacion +1 en a). El adapter solo necesita la parte
-    'XYZ' ('100' en el ejemplo). Si el tag no tiene prefijo 'N_', se
-    devuelve tal cual.
+def _offset_of(tag):
     """
-    if isinstance(tag, str) and "_" in tag:
-        _, rest = tag.split("_", 1)
-        return rest
-    return tag
+    The lattice offset (3 integers) of a bond, from the tag stored in
+    MagneticModel.bonds: a packed string as written by pack_offset (e.g.
+    '1_100' for +1 along a; '.' for no offset), or a sequence of three
+    integers.
+
+    The whole string must be decoded: stripping its 'N_' prefix (as this
+    function used to do) loses the offset, and bonds to neighbouring cells
+    end up inside the same cell.
+    """
+    if tag is None or (isinstance(tag, str) and tag in (".", "")):
+        return np.zeros(3, dtype=np.int64)
+    if isinstance(tag, str):
+        return np.asarray(unpack_offset(tag), dtype=np.int64)
+    offset = np.asarray(tag, dtype=np.int64)
+    if offset.shape != (3,):
+        raise ValueError(f"Unexpected bond offset: {tag!r}")
+    return offset
 
 
 # ---------------------------------------------------------------------------
-# Tiling a la supercell
+# Tiling the supercell
 # ---------------------------------------------------------------------------
 
 def _tile_bonds(bonds_cell, offset_cell, J_cell, N_cell, supercell):
-    """Expande bonds/J de la celda unidad a la supercell.
+    """Expand the bonds and couplings of the unit cell to the supercell.
 
     Parameters
     ----------
     bonds_cell : (M, 2) int64
-        Indices (i, j) en la celda unidad.
+        Indices (i, j) in the unit cell.
     offset_cell : (M, 3) int64
-        Offset en celdas del atomo j respecto del atomo i.
+        Offset, in cells, of site j with respect to site i.
     J_cell : (M,) float64
     N_cell : int
-        Numero de sitios de la celda unidad.
+        Number of sites of the unit cell.
     supercell : (3,) tuple
 
     Returns
@@ -164,7 +179,7 @@ def _tile_bonds(bonds_cell, offset_cell, J_cell, N_cell, supercell):
                     i_glob = site_index(cell0, i_atom)
                     j_glob = site_index(cell1, j_atom)
                     if i_glob == j_glob:
-                        continue  # self-loop: contribucion constante
+                        continue  # self-loop: a constant contribution
                     bonds_list.append((i_glob, j_glob))
                     J_list.append(J_cell[k])
 
@@ -179,18 +194,21 @@ def _tile_bonds(bonds_cell, offset_cell, J_cell, N_cell, supercell):
 
 
 # ---------------------------------------------------------------------------
-# API publica
+# Public API
 # ---------------------------------------------------------------------------
 
 def magnetic_model_to_ising(model, supercell=(1, 1, 1), J_overrides=None):
-    """Extrae (spins, bonds, J_vals, E0) de un MagneticModel.
+    """(spins, bonds, J_vals, E0) of the Ising model on a supercell of a
+    MagneticModel.
 
     Parameters
     ----------
     model : MagneticModel
     supercell : tuple(int, int, int)
-    J_overrides : dict, opcional
-        {bond_name: J_value}. Sobrescribe el 'value' del modelo.
+    J_overrides : dict, optional
+        {bond_name: J_value}, replacing the 'value' of the model (the one
+        stored by compute_couplings). A coupling without a value (nan) is
+        an error.
 
     Returns
     -------
@@ -212,36 +230,37 @@ def magnetic_model_to_ising(model, supercell=(1, 1, 1), J_overrides=None):
 
 
 # ---------------------------------------------------------------------------
-# Diagnostico
+# Diagnostics
 # ---------------------------------------------------------------------------
 
 def inspect_bonds(model):
-    """Imprime un resumen de la estructura de model.bonds.
-
-    Util para verificar que el adapter interpreta correctamente los tags
-    de offset y los J antes de correr el Monte Carlo.
+    """Print a summary of model.bonds: useful to check how the offsets and
+    the couplings are read before running a simulation.
     """
     print("=" * 60)
-    print(f"[adapter] Modelo: {type(model).__name__}")
-    print(f"[adapter] n_sites (celda unidad): "
-          f"{getattr(model, 'n_sites', getattr(model, 'natoms', 'NO DEFINIDO'))}")
-    print(f"[adapter] Tipos de bond: {len(model.bonds)}")
+    print(f"[adapter] Model: {type(model).__name__}")
+    if hasattr(model, "site_properties"):
+        n_sites = len(model.site_properties["coord_atomos"])
+    else:
+        n_sites = getattr(model, "n_sites", getattr(model, "natoms", "unknown"))
+    print(f"[adapter] Sites in the unit cell: {n_sites}")
+    print(f"[adapter] Couplings: {len(model.bonds)}")
 
     all_tags = set()
     for name, info in model.bonds.items():
-        tags = sorted({b[2] for b in info["bonds"]})
+        tags = sorted({str(b[2]) for b in info["bonds"]})
         all_tags.update(tags)
         print(f"  - {name!r}: dist={info.get('distance', '?')}, "
-              f"J={info['value']}, n_bonds={len(info['bonds'])}, "
+              f"J={info.get('value')}, n_bonds={len(info['bonds'])}, "
               f"tags={tags}")
 
-    print(f"[adapter] Tags unicos: {sorted(all_tags)}")
+    print(f"[adapter] Distinct tags: {sorted(all_tags)}")
 
     try:
         bonds_cell, offset_cell, J_cell, n_sites = _extract_bond_arrays(model)
-        print(f"[adapter] Parse exitoso: {len(bonds_cell)} bonds en la celda")
-        print(f"[adapter] Offsets unicos encontrados: "
+        print(f"[adapter] Read {len(bonds_cell)} bonds in the unit cell")
+        print(f"[adapter] Distinct offsets: "
               f"{sorted(set(map(tuple, offset_cell)))}")
     except Exception as e:
-        print(f"[adapter] ERROR en parse: {e}")
+        print(f"[adapter] Error reading the bonds: {e}")
     print("=" * 60)

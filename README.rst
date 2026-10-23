@@ -1,21 +1,33 @@
-![](logo.svg)
+.. image:: logo.svg
 
 
-Espectrojotometer.
-==================
+Spectrojotometer.
+=================
 
 This package is a set of tools to determine, by means of ab initio 
 simulations, the value of the coupling constants in a Heisenberg-like effective 
 magnetic model for a given magnetic system.
 
 
+A ready to use version for MS Windows is available
+`here <http://www2.fisica.unlp.edu.ar/~matera/visualbond/>`_.
 
-Instalation:
+Installation
 ============
 
-To install the package, just run
+spectrojotometer requires Python 3.11 or later. To install it from the
+repository::
 
-pip install .
+    pip install git+https://github.com/QILPCM-IFLP-CONICET/spectrojotometer
+
+or, from a copy of the repository, ``pip install .``. For development, an
+editable installation with the test dependencies::
+
+    pip install -e ".[test]"
+    pytest
+
+The tests of the graphical interface need a display; they are skipped
+without one (on a headless machine, run them with ``xvfb-run pytest``).
 
 
 
@@ -213,6 +225,60 @@ amplified, while the question here is how large the absolute error of
 each coupling is.
 
 
+Monte Carlo simulation
+======================
+
+With the coupling constants, ``spectrojotometer.monte_carlo`` simulates the
+model at finite temperature. Since the fit projects the Heisenberg model
+onto collinear configurations, the model is an Ising one, with the same
+convention as the fit:
+
+::
+
+   H = E_0 - Σ_b J_b s_i s_j,   s_i = ±1
+
+``monte_carlo.adapter.magnetic_model_to_ising(model, supercell, J_overrides)`` builds the lattice of a supercell of the model; the value of
+each coupling is the one stored by ``compute_couplings``
+(``model.bonds[name]["value"]``), unless ``J_overrides`` gives it. A coupling
+without a value is an error. ``run_ising_mc`` then samples it at a range of
+temperatures:
+
+.. code:: python
+
+   from spectrojotometer.model_io import magnetic_model_from_file
+   from spectrojotometer.monte_carlo import run_ising_mc
+   from spectrojotometer.monte_carlo.adapter import magnetic_model_to_ising
+
+   model = magnetic_model_from_file("examples/cromita_ortogonal.cif")
+   model.generate_bonds(0.02, [[0, 3.5]])
+   # The couplings: the ones estimated by compute_couplings (stored in
+   # model.bonds[name]["value"]), or given explicitly:
+   spins, bonds, couplings, e0 = magnetic_model_to_ising(
+       model, supercell=(2, 2, 2), J_overrides={"J1": -1.0}
+   )
+   results = run_ising_mc(
+       spins, bonds, couplings, e0, T_min=0.5, T_max=10.0, n_temps=12,
+       n_equil=1000, n_sweeps=5000, seed=0,
+   )
+   print(results["algorithm"], results["N"], results["Tc_peak"])
+
+It returns, for each temperature, the energy and magnetization per site,
+the susceptibility, the specific heat and the Binder cumulant, and an
+estimate of the critical temperature (``Tc_peak``, the peak of the connected
+susceptibility). Temperatures are in the units of J (Boltzmann constant 1).
+
+The algorithm (``algorithm``) can be ``"wolff"`` (cluster updates; valid only
+for unfrustrated models, which are mapped onto ferromagnetic ones by a
+gauge transformation), ``"metropolis"``, or ``"pt"`` (parallel tempering). By
+default (``"auto"``), Wolff is used unless the model is frustrated, as in this
+example: the magnetic sites of the spinel form a pyrochlore lattice, which
+an antiferromagnetic coupling frustrates.
+
+The kernels are compiled with numba. In visualbond, the Monte Carlo tab
+runs these simulations; its table of couplings starts from the values
+estimated in the main window, and they can be edited before running.
+
+
 Logging
 ========
 
@@ -248,8 +314,8 @@ Tools in the package and workflow:
 
 Installing the package provides these commands:
 
-* bond_generator, optimize-configurations and evaluate_cc,
-  described below, which form the basic workflow;
+* bond_generator, optimize-configurations and evaluate_cc, which form
+  the basic workflow;
 * map_configs, which maps spin configurations between two models;
 * print_equations, which prints the equations of a set of
   configurations in plain text, LaTeX or Wolfram format;
@@ -257,7 +323,8 @@ Installing the package provides these commands:
 
 Each command accepts --help, and -v / -vv to show progress and
 diagnostic messages. They can also be run as
-python -m spectrojotometer.cli.<command> (with underscores).
+python -m spectrojotometer.cli.<command> (with underscores). All of
+them are described below.
 
 
 bond_generator
@@ -291,10 +358,15 @@ bond_generator
 
 As an example, running::
 
-   bond_generator --rmin 0 --rmax 4.9 --discretization .02  example1.cif example1-nnn.cif
+   bond_generator --rmin 0 --rmax 3.1 --discretization .02  example1.cif example1-nnn.cif
 
-   for the  example1.cif  file in the examples folder, example1-nnn.cif file is created. The model can be modified by hand
-   by means of a plain text editor.
+   for the example1.cif file in the examples folder creates example1-nnn.cif, with two couplings,
+   J0 (distance 2.94) and J1 (distance 3.08). The model can be modified by hand with a text editor.
+
+   Mind the size of the cell: with n magnetic sites there are 2^(n-1) distinct configurations, so
+   at most 2^(n-1) - 1 couplings can be determined. example1.cif has 3 sites: with --rmax 4.9 the
+   model would have four couplings, which no choice of configurations could determine (the
+   programs below report an infinite error bound). Larger models need a larger cell.
 
 
 optimize-configurations
@@ -336,19 +408,22 @@ As an example, running::
 
    optimize-configurations example1-nnn.cif optconfs1.out
    
-   on the examples/example1-nnn.cif generated by bond_generator, the file optconfs1.out is created, containing a list
-   of magnetic configurations from which energies the coefficient couplings can be estimated. The program also writes
-   a recovery file example1-nnn-resume.tmp, which can be used to improve the magnetic configuration choice:
+   on the example1-nnn.cif generated by bond_generator, creates optconfs1.out, with the magnetic
+   configurations whose energies determine the couplings with the smallest errors (here, three
+   configurations, and a largest error per unit error in the energies of 1.0). The program also
+   writes a recovery file, example1-nnn-resume.tmp, which can be used to continue the search:
 
    optimize-configurations --start example1-nnn-resume.tmp example1-nnn.cif optconfs1.out
 
-   If we want to know what would be most profiteable magnetic configurations to be simulated once we have already simulated 
-   a given set of configurations, we run
+   To know which configurations would be most useful to simulate once a set of them has already been
+   simulated, run
 
-   optimize-configurations --known optconfs1.out example1-nnn-resume.tmp example1-nnn.cif optconfs2.out
+   optimize-configurations --known optconfs1.out example1-nnn.cif optconfs2.out
 
-   In this case, the program will try to provide the optimal configuration to be added to those in optconfs1.out.
-   We can ask for an specific amount of new configurations throw the parameter -n.
+   In this case, the program looks for the configurations that best complement those in optconfs1.out.
+   Here it proposes none: the only configuration left, [0, 0, 0], would not reduce the errors. Unless
+   the number of new configurations is given with -n, a configuration is proposed only if it reduces
+   the largest error of a coupling by at least 5%.
 
 
 evaluate_cc
@@ -427,6 +502,78 @@ evaluate_cc
     differences larger than 1 mean that the model cannot reproduce the
     input spectrum. If no set of couplings reproduces all the energies
     within the tolerance, the couplings are marked as (incompatible).
+
+
+map_configs
+-----------
+
+::
+
+    usage: map_configs [-h] [--tol tolerance] [--fill {0,1}] [-v]
+                       modelfile1 modelfile2 conffile outfile
+
+    Translate the spin configurations of a source model into configurations of a
+    target model: each site of the target takes the spin of the site of the source
+    at the same position (up to a translation of the source lattice). The energies
+    are scaled by the ratio between the number of sites of the target and of the
+    source cells.
+
+    positional arguments:
+      modelfile1       model file of the source model
+      modelfile2       model file of the target model
+      conffile         configurations of the source model
+      outfile          output file; "-" prints to the standard output
+
+    options:
+      -h, --help       show this help message and exit
+      --tol tolerance  largest distance between matching sites (default 0.1)
+      --fill {0,1}     spin for the sites of the target without counterpart in the
+                       source (by default, such sites are an error)
+      -v, --verbose    Show progress messages (-v) or detailed diagnostics (-vv).
+
+    For example, mapping the configurations of example1 onto the same
+    model (each site onto itself):
+
+    map_configs examples/example1.cif examples/example1.cif examples/example1.spin -
+
+    # site map (target <- source): [0, 1, 2]
+    49022.0027	[0, 0, 0]	# 0
+    49022.0022	[1, 0, 0]	# 1
+    49022.0018	[0, 1, 0]	# 2
+
+    The output is a configuration file: it can be used as input of the
+    other commands. A site of the target model without counterpart in the
+    source model is an error, unless --fill gives the spin to use.
+
+
+print_equations
+---------------
+
+::
+
+    usage: print_equations [-h] [--format format] [-v] modelfile conffile
+
+    From an standard cif or wien2k struct file, and a list of configurations,
+    prints the list of equations for the coupling constants
+
+    positional arguments:
+      modelfile        load atomic positions from a model file for the source
+                       model
+      conffile         configs in the src model
+
+    options:
+      -h, --help       show this help message and exit
+      --format format  output format
+      -v, --verbose    Show progress messages (-v) or detailed diagnostics (-vv).
+
+    For example,
+
+    print_equations examples/example1.cif examples/example1.spin
+
+    # Equations:
+    - 2.0 * J0 +  E_0=E_1  #  0
+       E_0=E_2  #  1
+      2.0 * J0 +  E_0=E_3  #  2
 
 
 

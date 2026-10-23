@@ -31,6 +31,71 @@ Changes
 * ``ApplicationGUI`` no longer enters the Tk event loop from its
   constructor: call ``ApplicationGUI().run()``. The window can now be
   built and driven in tests (``tests/test_gui.py``).
+* Monte Carlo simulation of the fitted model (``spectrojotometer.monte_carlo``,
+  and the Monte Carlo tab of visualbond): Ising Metropolis, Wolff (with a
+  gauge transformation for unfrustrated antiferromagnets) and parallel
+  tempering, detection of frustration, critical temperature. New
+  dependency: numba. Along with its integration:
+
+  * The adapter lost the lattice offsets of the bonds (it stripped the
+    prefix of the packed offset): bonds to neighbouring cells were placed
+    inside the same cell (37.5% of the bonds of a 2x2x2 supercell of
+    ``cromita_ortogonal``). It also accepts offsets as tuples, takes the
+    number of sites from the model, and rejects couplings without a value.
+  * The values of the couplings editor of the Monte Carlo tab were read
+    and ignored. The editor itself (``gui/couplings_editor.py``) was
+    missing and has been rewritten.
+  * ``compute_couplings`` stores the estimated couplings in
+    ``model.bonds[name]["value"]`` (``nan`` until estimated, or if
+    undetermined).
+  * The synchronization of the couplings when entering the Monte Carlo
+    tab never ran.
+  * With several Metropolis replicas, the warning about disagreeing
+    replicas was always issued (it compared different temperatures).
+  * ``run_ising_mc`` documented.
+  * The Monte Carlo tab, its messages and the docstrings of the module
+    in English, like the rest of the package. The docstring of the
+    adapter described the wrong encoding of the offsets ('100' for +1
+    along a, instead of '1_100'), the one that caused the bug above.
+  * The controls of the Monte Carlo tab scroll (``gui/scrollable.py``):
+    in a short window, the last ones (the couplings, Run, Save) were out
+    of reach.
+
+* visualbond with Tk 9: the import window and the search dialog failed
+  (``trace`` replaced by ``trace_add``). Python 3.14 added to the CI.
+
+* Documentation:
+
+  * Installation instructions (Python >= 3.11, editable install for
+    development, running the GUI tests on a headless machine).
+  * ``map_configs`` and ``print_equations`` are documented like the
+    other commands; every ``--help`` shown is the actual one.
+  * The documented workflow works: with ``--rmax 4.9``, the example of
+    ``bond_generator`` defined more couplings than a 3-site cell can
+    determine, and the ``--known`` example had a spurious argument. It
+    is now run by the tests.
+  * ``README.rst``: the logo was in Markdown syntax, and the title and
+    the link to the Windows version differed from ``README.md``.
+  * ``tests/README.md`` describes every test file (it only covered the
+    readers of model files, and described the pymatgen-based reader as
+    an optional prototype).
+  * visualbond: the optimal subset showed its cost as
+    ``sqrt(l)/||A^-1||``; it now shows ``|ΔJ|/|ΔE| <``, like the rest.
+
+* Mapping configurations between models, in the library:
+  ``site_map(source, target, tol)`` and ``map_configurations(source,
+  confs, target, tol, fill=None)``. Sites match up to a translation of
+  the source lattice (before, only within the supercell). A site of the
+  target without counterpart is an error unless ``fill`` is given;
+  before, it silently took the spin of the last site. Used by
+  ``map_configs`` and by visualbond's import window.
+* The command line tools work again: ``bond_generator`` (stale
+  attributes), ``print_equations`` (wrong argument name), ``map_configs``
+  (stale attributes, and a TypeError; its output is now a configuration
+  file, with the energies scaled by the ratio of cell sizes; new
+  ``--tol`` and ``--fill``). The import window of visualbond works
+  again (stale attributes, a misspelt one). Every command is now run
+  for real in the tests and in the CI on the installed package.
 * Choosing configurations, one consistent measure: the largest error of
   each coupling per unit error in the energies.
 

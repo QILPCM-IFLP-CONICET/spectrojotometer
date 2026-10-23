@@ -3,6 +3,7 @@ Magnetic Model class
 """
 import logging
 import warnings
+
 import numpy as np
 import numpy.linalg as la
 
@@ -106,6 +107,65 @@ def build_supercell(supercell_size, atomic_positions, bravais_vectors):
 
 
 
+def site_map(source, target, tol=0.1):
+    """
+    For each site of the target model, the index of the site of the source
+    model at the same position, up to a translation of the source lattice;
+    -1 if there is none within tol.
+
+    source, target: MagneticModel instances, with positions in the same
+    frame (Cartesian coordinates).
+    """
+    src_pos = np.asarray(source.site_properties["coord_atomos"], dtype=float)
+    tgt_pos = np.asarray(target.site_properties["coord_atomos"], dtype=float)
+    bravais = np.asarray(source.lattice_properties["bravais_vectors"], dtype=float)
+    result = []
+    for point in tgt_pos:
+        best, best_dist = -1, tol
+        for index, site in enumerate(src_pos):
+            diff = point - site
+            if bravais.size:
+                # Closest lattice vector: integer combination of the
+                # Bravais vectors (least squares, then rounded).
+                coeffs = np.linalg.lstsq(bravais.T, diff, rcond=None)[0]
+                diff = diff - bravais.T @ np.round(coeffs)
+            dist = np.linalg.norm(diff)
+            if dist < best_dist:
+                best, best_dist = index, dist
+        result.append(best)
+    return result
+
+
+def map_configurations(source, confs, target, tol=0.1, fill=None):
+    """
+    Translate spin configurations of the source model into configurations
+    of the target model, using site_map: each site of the target takes the
+    spin of the source site at the same position.
+
+    Raises ValueError if some site of the target has no counterpart in the
+    source, unless fill (0 or 1) is given: then those sites take that
+    value. Also if a configuration does not have one value per site of the
+    source model.
+    """
+    mapping = site_map(source, target, tol)
+    missing = [i for i, j in enumerate(mapping) if j < 0]
+    if missing and fill is None:
+        raise ValueError(
+            f"sites {missing} of the target model have no counterpart in the "
+            f"source model (tolerance {tol})"
+        )
+    num_sites = len(source.site_properties["coord_atomos"])
+    result = []
+    for conf in confs:
+        if len(conf) != num_sites:
+            raise ValueError(
+                f"configuration {conf} has {len(conf)} values; the source "
+                f"model has {num_sites} sites"
+            )
+        result.append([conf[j] if j >= 0 else fill for j in mapping])
+    return result
+
+
 def _clamp_supercell_size(supercell_size):
     """An int, or one value per axis; each clamped to 1..4."""
     logger.debug("supercell size: %s", supercell_size)
@@ -126,7 +186,11 @@ def _per_site_values(values, num_sites, default):
 
 
 def _bonds_dict(bond_lists, bond_names, bond_distances):
-    """The ``bonds`` dict: name -> {"distance": ..., "bonds": [...]}."""
+    """
+    The ``bonds`` dict: name -> {"distance": ..., "bonds": [...],
+    "value": ...}. The value of each coupling is np.nan until it is
+    estimated (see MagneticModel.compute_couplings).
+    """
     if bond_lists is None:
         return {}
     logger.debug("got %d couplings", len(bond_lists))
@@ -140,7 +204,7 @@ def _bonds_dict(bond_lists, bond_names, bond_distances):
     if bond_names is None:
         bond_names = ["J" + str(i) for i in range(len(bond_lists))]
     return {
-        name: {"distance": distance, "bonds": bonds}
+        name: {"distance": distance, "bonds": bonds, "value": np.nan}
         for name, distance, bonds in zip(bond_names, bond_distances, bond_lists)
     }
 
@@ -188,8 +252,8 @@ class MagneticModel:
         magnetic_species=None,
         onfly: bool = True,
         model_label="default",
-        g_lande_factors: Optional[list] = None,
-        spin_repr: Optional[list] = None,
+        g_lande_factors: list | None = None,
+        spin_repr: list | None = None,
         symmetries=None,
         space_group_symbol=None,
     ):
@@ -338,7 +402,11 @@ class MagneticModel:
                 else:
                     bonds[name]["bonds"].extend(new_bonds[dist_type])
                     continue
-            bonds[name] = {"distance": dist, "bonds": new_bonds[dist_type]}
+            bonds[name] = {
+                "distance": dist,
+                "bonds": new_bonds[dist_type],
+                "value": np.nan,
+            }
 
     def formatted_equations(
         self, coeff_matrix, ensname=None, comments=None, eq_format="plain"
@@ -819,8 +887,11 @@ class MagneticModel:
         Undetermined couplings are returned with js = 0 and deltaJ = nan.
         If the model is incompatible with the energies, all the entries
         of deltaJ are -1.
+
+        The estimated couplings are also stored in the model, as
+        self.bonds[name]["value"] (np.nan for undetermined couplings), so
+        that, e.g., a Monte Carlo simulation can use them.
         """
-        print("Efind jssss")
         if printeqs:
             coeffs = self.coefficient_matrix(confs, centered=False)
             print("\n# Configurations:\n=================\n")
@@ -842,16 +913,20 @@ class MagneticModel:
                 else ("montecarlo" if montecarlo else "ellipse")
             )
         if method == "montecarlo":
-            return self.montecarlo_box(
-                coeffs,
-                energs,
-                err_energs,
-                1000 if mcsteps is None else mcsteps,
-                mcsizefactor,
-                rng=rng,
+            return self._store_coupling_values(
+                self.montecarlo_box(
+                    coeffs,
+                    energs,
+                    err_energs,
+                    1000 if mcsteps is None else mcsteps,
+                    mcsizefactor,
+                    rng=rng,
+                )
             )
         if method == "exact":
-            return self.exact_box(coeffs, energs, err_energs)
+            return self._store_coupling_values(
+                self.exact_box(coeffs, energs, err_energs)
+            )
         if method != "ellipse":
             raise ValueError(f"unknown method {method!r}")
         # Otherwise, it gives an estimation in terms of the bigger ellipse.
@@ -867,13 +942,22 @@ class MagneticModel:
         else:
             rr = np.sqrt(rr) * err_energs
             deltaJ = box_ellipse(coeffs, rr)
-        # Update values of the coupling constants:
-        print("store values", js, "in", self.bonds.keys())
-        for j_label ,j_val in zip(self.bonds, js):
-            print(j_label,"->", j_val)
-            self.bonds[j_label]["value"]=j_val
+        return self._store_coupling_values((js, deltaJ, model_chi, 1.0))
 
-        return (js, deltaJ, model_chi, 1.0)
+    def _store_coupling_values(self, result):
+        """
+        Store the couplings estimated by compute_couplings in
+        self.bonds[name]["value"]: np.nan for the undetermined ones (nan
+        error bar). Returns result unchanged.
+        """
+        js, d_js = result[0], result[1]
+        for name, value, error in zip(self.bonds, js, d_js):
+            self.bonds[name]["value"] = float(value) if np.isfinite(error) else np.nan
+        logger.debug(
+            "stored coupling values: %s",
+            {name: bond["value"] for name, bond in self.bonds.items()},
+        )
+        return result
 
     def bound_inequalities(self, confs, energs, err_energs=0.01, rtol=1.0e-3):
         """
@@ -1055,38 +1139,9 @@ class MagneticModel:
             js = 0.5 * (upper + lower)
             d_js = 0.5 * (upper - lower)
 
-        if len(jtrys) == 1:
-            print("errors  estimated by boxing the  ellipse")
-            rr = np.sqrt(numcalc * tol**2 - esqerr**2)
-            djs = box_ellipse(coeffs, rr)
-            return j0s, djs, (e0s - energs) / tol, 1.0 / (numtry + 1.0)
-        print(len(jtrys))
-        print("Accepted rate=", len(jtrys) / (numtry + 1.0))
-
-        j0s = np.average(jtrys, 0)
-        jtrys = [abs(js - j0s) for js in jtrys]
-        d_js = np.max(np.array(jtrys), 0)
-        # If the model is singular, discard the coefficients that
-        # couldn't be determined, setting them to 0.
-        if issingular:
-            for i, d_j in enumerate(d_js):
-                if d_j > 100:
-                    d_js[i] = np.nan
-                    j0s[i] = 0
-
-        e0s = coeffs.dot(j0s)
-
-        print("store values", j0s, "in", self.bonds.keys())
-        for j_label ,j_val in zip(self.bonds, j0s):
-            print(j_label,"->", j_val)
-            self.bonds[j_label]["value"]=j_val
-        
-        return (
-            j0s,
-            d_js,
-            (e0s - energs)[:numcalc] / tol,
-            len(jtrys) / (numtry + 1.0),
-        )
+        js[~determined] = 0.0
+        d_js = np.where(determined, d_js, np.nan)
+        return js, d_js, model_chi, rate
 
     def save_cif(self, filename, bond_names=None):
         """Save the model in a CIF file"""

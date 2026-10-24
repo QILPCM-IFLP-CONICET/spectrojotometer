@@ -46,6 +46,32 @@ Changes
   model (it used ``model.cell_size``, always 0, so it did not pad), and
   ``optimize-configurations`` writes ``# <label>`` for every
   configuration.
+* CIF bonds declared through symmetry codes
+  (``_geom_bond_site_symmetry_1``/``_2``, ``n_klm``: the image of an
+  atom by the n-th operator of the file, moved by ``klm - 555`` cells)
+  were read wrongly, by both CIF readers: in a spinel and in a hexagonal
+  structure, couplings had missing bonds, bonds counted twice and bonds
+  that do not exist. Each bond of a coupling should have its declared
+  length; four causes:
+
+  * The image of the n-th operator was looked up under the label of the
+    (n-1)-th (and images that coincide with an atom placed by another
+    operator have no label): such bonds were dropped silently. The ends
+    of a bond are now found by their position, and a bond to an
+    operator that is not in the file, or to a point where there is no
+    atom, is skipped with a warning.
+  * ``find_atom_offset_by_symmetry`` truncated the cell offset instead
+    of rounding it: in the hexagonal structure, a third of the images
+    got the wrong cell (-0.9999999 gave 0, not -1).
+  * The symmetric images of a bond whose two ends fall outside the home
+    cell were dropped, instead of being translated back.
+  * ``normalize_bond`` kept (i, i, +n) and (i, i, -n), the same bond
+    between a site and its image, as two bonds: such couplings were
+    counted twice (their fitted value, halved).
+
+  Checked against all the pairs of sites at each distance, found by
+  brute force (``tests/test_cif_bond_symmetry.py``). The known failure
+  of ``test_cif_parser_equivalence`` (an xfail) now passes.
 * WIEN2k ``.struct`` files:
 
   * ``primitive_cell=True`` applies to them too (it was ignored, with a

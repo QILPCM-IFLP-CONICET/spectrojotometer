@@ -8,12 +8,14 @@ de los átomos pueda diferir.
 
 Requiere pymatgen instalado; si no está, estos tests se saltean.
 """
+import numpy as np
 import pytest
 
 pymatgen = pytest.importorskip("pymatgen")
 
 from spectrojotometer.model_io import magnetic_model_from_cif
 from spectrojotometer.model_io.model_io_pymatgen import magnetic_model_from_cif_pymatgen
+from spectrojotometer.tools import unpack_offset
 
 from .conftest import assert_models_equivalent
 
@@ -86,32 +88,29 @@ def test_g_factor_and_spin_survive_in_both_implementations(fixtures_dir):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Bug preexistente y compartido por las dos implementaciones (el "
-        "prototipo reusa cif_read_loop_bonds/generate_atoms_by_symmetries "
-        "sin modificar): cuando un enlace se declara con "
-        "`_geom_bond_site_symmetry_2` apuntando a un operador de simetría "
-        "no-identidad (p.ej. '2_555'), `cif_read_loop_bonds` arma la "
-        "etiqueta de la réplica como `<label>_<sym>` con `sym = índice_CIF "
-        "- 1`, pero `generate_atoms_by_symmetries` había etiquetado esa "
-        "misma réplica como `<label>_<sym + 1>`. La etiqueta no coincide "
-        "con ninguna clave de `atomlabels`, así que el enlace se descarta "
-        "en silencio (0 bonds en vez de 1). Este test documenta el "
-        "comportamiento correcto esperado; falla mientras el bug siga "
-        "presente en `model_io.py` (no es algo que el prototipo pueda "
-        "arreglar por su cuenta, ya que reusa esa función tal cual)."
-    ),
-)
 @pytest.mark.parametrize(
     "loader",
     [magnetic_model_from_cif, magnetic_model_from_cif_pymatgen],
     ids=["current", "pymatgen-prototype"],
 )
-def test_bond_via_non_identity_symmetry_is_currently_dropped(fixtures_dir, loader):
+def test_bond_via_non_identity_symmetry(fixtures_dir, loader):
+    """
+    A bond declared with `_geom_bond_site_symmetry_2` = '2_555': from Cu1
+    to its image by the second operator, the centring (x, y+1/2, z+1/2).
+    It was dropped (0 bonds): the image was looked up as "Cu1_1", and
+    generate_atoms_by_symmetries labels it "Cu1_2". It is now found by
+    its position. Its image by the centring, from the centred site to
+    Cu1 one cell up in y and z, is a different bond of the same coupling:
+    two bonds, of the declared length.
+    """
     model = loader(str(fixtures_dir / "synthetic_bond_via_symmetry.cif"))
 
     assert len(model.site_properties["coord_atomos"]) == 2
     assert set(model.bonds) == {"J0"}
-    assert len(model.bonds["J0"]["bonds"]) == 1
+    bonds = model.bonds["J0"]["bonds"]
+    assert len(bonds) == 2
+    pos = np.array(model.site_properties["coord_atomos"], dtype=float)
+    lat = np.array(model.lattice_properties["bravais_vectors"], dtype=float)
+    for i, j, tag in bonds:
+        offset = np.zeros(3) if tag in (".", None) else np.array(unpack_offset(tag))
+        assert np.linalg.norm(pos[j] + offset @ lat - pos[i]) == pytest.approx(7.0711, abs=1e-4)

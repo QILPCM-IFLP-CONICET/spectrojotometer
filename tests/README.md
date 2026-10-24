@@ -70,6 +70,10 @@ The model (`spectrojotometer/magnetic_model.py`):
   search on a small model, and the 5% rule for the number of
   configurations).
 - `test_model_mapping.py` — `site_map` and `map_configurations`.
+- `test_cif_bond_symmetry.py` — CIF bonds declared through symmetry codes
+  (`_geom_bond_site_symmetry`), with both readers, against all the pairs of
+  sites at each distance found by brute force (a spinel and a hexagonal
+  structure); cell offsets, bonds between a site and its own image.
 - `test_spin_configurations.py` — reading spin configurations: the errors
   and their line numbers, padding, comments; the file reader, visualbond's
   main window and the output of `optimize-configurations`.
@@ -105,17 +109,13 @@ Interfaces and packaging:
   nothing has been imported before (this caught a missing
   `import importlib.util` that only failed in regular installations).
 
-## Known issue
+## Formerly known issue
 
 A bond declared with `_geom_bond_site_symmetry_2` pointing at a
-non-identity symmetry operator (e.g. `"2_555"`) is silently dropped by
-both CIF readers, since the pymatgen-based one reuses
-`cif_read_loop_bonds` / `generate_atoms_by_symmetries`:
-`cif_read_loop_bonds` labels the replica of the atom as `<label>_<sym>`
-with `sym = cif_index - 1`, while `generate_atoms_by_symmetries` labels
-the same replica `<label>_<sym + 1>`. Since the labels do not match, the
-bond is lost (0 bonds instead of 1) instead of raising an error. The
-fixture `synthetic_bond_via_symmetry.cif` reproduces it, and
-`test_bond_via_non_identity_symmetry_is_currently_dropped` in
-`test_cif_parser_equivalence.py` documents it as `xfail` for both
-readers.
+non-identity symmetry operator (e.g. `"2_555"`) was silently dropped by
+both CIF readers: the image of the operator was looked up under the
+label of the previous one. The fixture `synthetic_bond_via_symmetry.cif`
+reproduced it, and `test_cif_parser_equivalence.py` documented it as
+`xfail`; it is fixed (the ends of a bond are found by their position),
+and `test_cif_bond_symmetry.py` checks such bonds against all the pairs
+of sites, found by brute force.

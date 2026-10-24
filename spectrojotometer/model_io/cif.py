@@ -68,7 +68,9 @@ def find_atom_offset_by_symmetry(p, symop, magnetic_positions) -> tuple:
         ],
         key=lambda u: u[1],
     )[0][0]
-    offset = np.array(sp - magnetic_positions[j], dtype=int)
+    # Rounded: a conversion to int truncates, and a difference such as
+    # -0.9999999 (1/3 + 2/3 in floating point) gave 0 instead of -1.
+    offset = np.rint(sp - np.asarray(magnetic_positions[j], dtype=float)).astype(int)
     return j, offset
 
 def normalize_bond(
@@ -101,13 +103,22 @@ def normalize_bond(
         `max(src, dest)`.
     offset : str
         The offset from `src` to `dest` (negated if the endpoints were
-        swapped), packed with `pack_offset`.
+        swapped; for a bond between a site and its own image, with its
+        first nonzero component positive), packed with `pack_offset`.
     """
     if isinstance(offset, str):
         offset = unpack_offset(offset)
+    offset = np.asarray(offset, dtype=int)
     if src > dest:
         src, dest = dest, src
         offset = -offset
+    elif src == dest:
+        # A site and its image in another cell: (i, i, +n) and (i, i, -n)
+        # are the same bond (both were kept, and counted twice). The first
+        # nonzero component of the offset is made positive.
+        nonzero = offset[offset != 0]
+        if nonzero.size and nonzero[0] < 0:
+            offset = -offset
     return src, dest, pack_offset(offset)
 
 def parse_symmetry(strsymm: str) -> tuple[list, list]:
@@ -407,7 +418,42 @@ def cif_read_loop_atoms(labels: list, entries: list, magnetic_atoms: tuple) -> t
         spin_repr,
     )
 
-def cif_read_loop_bonds(labels: list, entries: list, atomlabels: list) -> tuple:
+def _bond_endpoint(label, code, atomlabels, symmetries, magnetic_positions, tol=1.0e-3):
+    """
+    (site, cell offset) of the atom at the end of a bond, given by its
+    label and its `_geom_bond_site_symmetry` code (`n_klm`, or "."), or
+    None (with a warning) if the operator is not in the file or the image
+    is not an atom of the model.
+    """
+    sym, cell = unpack_symmetry_and_offset(code)
+    if not 0 <= sym < len(symmetries):
+        logger.warning(
+            "bond to %s skipped: the symmetry code %r refers to operator %d, "
+            "and the file has %d",
+            label, code, sym + 1, len(symmetries),
+        )
+        return None
+    base = np.asarray(magnetic_positions[atomlabels[label]], dtype=float)
+    symop = symmetries[sym]
+    site, offset = find_atom_offset_by_symmetry(base, symop, magnetic_positions)
+    image = symop[0].dot(base) + symop[1]
+    if np.linalg.norm(image - magnetic_positions[site] - offset) > tol:
+        logger.warning(
+            "bond to %s skipped: its image by operator %d (%r) is not an atom "
+            "of the model",
+            label, sym + 1, code,
+        )
+        return None
+    return site, offset + np.asarray(cell, dtype=int)
+
+
+def cif_read_loop_bonds(
+    labels: list,
+    entries: list,
+    atomlabels: list,
+    symmetries: list | None = None,
+    magnetic_positions: list | None = None,
+) -> tuple:
     """
     Parse the `_geom_bond` loop of a CIF file into normalized bonds,
     grouped by magnetic coupling.
@@ -432,19 +478,28 @@ def cif_read_loop_bonds(labels: list, entries: list, atomlabels: list) -> tuple:
         image, see below) to its index in the model, as returned/
         extended by `cif_read_loop_atoms` and
         `generate_atoms_by_symmetries`.
+    symmetries, magnetic_positions : optional
+        The symmetry operators of the file, in its order, and the
+        fractional positions of the (symmetry-expanded) atoms, indexed
+        as atomlabels. With them, the endpoints are found by geometry
+        (see Notes); the readers of this package pass them.
 
     Notes
     -----
-    When present, `_geom_bond_site_symmetry_1`/`_2` are decoded with
-    `unpack_symmetry_and_offset`; a non-identity symmetry index `sym`
-    is appended to the corresponding atom label as `"_" + str(sym)`
-    before the `atomlabels` lookup, matching the labels
-    `generate_atoms_by_symmetries` assigns to symmetry-generated
-    atoms. A bond whose (possibly suffixed) label isn't found in
-    `atomlabels` is skipped, with a message logged at INFO level
-    (this is the expected outcome for bonds to atoms that were
-    filtered out by `magnetic_atoms`, but can also hide a labeling
-    mismatch -- see the tests for a known case).
+    `_geom_bond_site_symmetry_1`/`_2` follow the CIF convention: `n_klm`
+    is the image of the atom under the n-th symmetry operator of the
+    file, translated by (k-5, l-5, m-5) cells. With symmetries and
+    magnetic_positions, that point is computed and the atom of the model
+    there is found (find_atom_offset_by_symmetry), with its cell offset:
+    this also finds images that coincide with an atom placed by another
+    operator. A bond whose operator is not in the file, or whose image
+    is not an atom of the model, is skipped with a warning.
+
+    Without them, the image is looked up by the label that
+    `generate_atoms_by_symmetries` gives it, `"<label>_<n>"` (only
+    for images that were new atoms). Either way, a bond to an atom
+    that is not in `atomlabels` (e.g. not magnetic) is skipped, with a
+    message logged at INFO level.
 
     If `_geom_bond_label` is absent, bonds are grouped automatically
     by identical declared distance instead, with generated names
@@ -494,25 +549,50 @@ def cif_read_loop_bonds(labels: list, entries: list, atomlabels: list) -> tuple:
             "jlabelcol": jlabelcol,
         }
     )
+    geometric = symmetries is not None and magnetic_positions is not None
+    if geometric and len(symmetries) == 0:
+        symmetries = [(np.eye(3), np.zeros(3))]  # no symmetry loop: P1
     for en in entries:
         label1 = en[at1col]
         label2 = en[at2col]
-        outbond1 = np.array([0, 0, 0])
-        outbond2 = np.array([0, 0, 0])
-        if sym1col != -1:
-            sym, outbond1 = unpack_symmetry_and_offset(en[sym1col])
-            if sym != 0:
-                label1 = label1 + "_" + str(sym)
-        if sym2col != -1:
-            sym, outbond2 = unpack_symmetry_and_offset(en[sym2col])
-            if sym != 0:
-                label2 = label2 + "_" + str(sym)
+        codes = [
+            en[sym1col] if sym1col != -1 else ".",
+            en[sym2col] if sym2col != -1 else ".",
+        ]
         if not (label1 in atomlabels and label2 in atomlabels):
             msg = f"{[label1, label2]} not in atomlabels"
             logger.info(msg)
             continue
-        outbond = np.array(outbond2) - np.array(outbond1)
-        newbond = normalize_bond(atomlabels[label1], atomlabels[label2], outbond)
+        if geometric:
+            ends = [
+                _bond_endpoint(label, code, atomlabels, symmetries, magnetic_positions)
+                for label, code in zip((label1, label2), codes)
+            ]
+            if None in ends:
+                continue
+            (site1, cell1), (site2, cell2) = ends
+            newbond = normalize_bond(site1, site2, cell2 - cell1)
+        else:
+            sites, cells = [], []
+            for label, code in zip((label1, label2), codes):
+                sym, cell = unpack_symmetry_and_offset(code)
+                if sym != 0:
+                    # generate_atoms_by_symmetries labels the image of the
+                    # n-th operator (from 1, as in the CIF) "<label>_<n>";
+                    # sym counts from 0 (this looked up "<label>_<n-1>").
+                    label = label + "_" + str(sym + 1)
+                sites.append(label)
+                cells.append(np.asarray(cell))
+            if not (sites[0] in atomlabels and sites[1] in atomlabels):
+                logger.warning(
+                    "bond %s-%s (%s, %s) skipped: no atom %s",
+                    label1, label2, codes[0], codes[1],
+                    [x for x in sites if x not in atomlabels],
+                )
+                continue
+            newbond = normalize_bond(
+                atomlabels[sites[0]], atomlabels[sites[1]], cells[1] - cells[0]
+            )
         en[distcol] = en[distcol].split(sep="(", maxsplit=1)[0]
         if jlabelcol is None:
             if en[distcol] not in bond_distances:
@@ -985,12 +1065,9 @@ def generate_bonds_by_symmetries(
                 j, offsetj = find_atom_offset_by_symmetry(
                     magnetic_positions[j] + offset, symop, magnetic_positions
                 )
-                if any(offseti != 0):
-                    # The source must be inside the cell
-                    i, offseti, j, offsetj = j, offsetj, i, offseti
-                if any(offseti != 0):
-                    # both atoms are outside the cell
-                    continue
+                # The image may lie in another cell: a bond only depends on
+                # the relative offset (both images used to be required in
+                # the home cell, and the others were dropped).
                 offset = offsetj - offseti
                 if any(offset < -5) or any(offset > 4):
                     msg = f"the bond is too long. offset= {offset}"
@@ -1216,7 +1293,9 @@ def magnetic_model_from_cif(
                             bond_labels,
                             bond_distances,
                             bondlists,
-                        ) = cif_read_loop_bonds(labels, entries, atomlabels)
+                        ) = cif_read_loop_bonds(
+                            labels, entries, atomlabels, symmetries, magnetic_positions
+                        )
                         # Atoms are taken exactly as given in the CIF (no
                         # expansion). For finding *equivalent bonds*, however,
                         # we do want the full space-group symmetry, completing

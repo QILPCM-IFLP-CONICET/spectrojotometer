@@ -643,11 +643,10 @@ class MagneticModel:
 
     def generate_bonds(self, discretization, ranges, bond_names=None):
         """
-        En base a la celda unidad, la red de Bravais y el tamaño de la
-        "super-celda" (cuantas copias de la celda unidad se consideran
-        como entorno) calcula los bonds,
-        esto es, los pares de sitios magnéticos que interactúan según cada
-        una de las constantes de acoplamiento a determinar.
+        In base of the unit cell, the Bravais' lattice and the size of the
+        supercell (how many copies of the unit cell are considered as
+        "environment") compute the bonds, i.e. the pairs of magnetic sites
+        interacting according each of the coupling constants to be determined.
         """
         atom_type = self.site_properties["magnetic_species"]
         cell_size = self.lattice_properties["cell_size"]

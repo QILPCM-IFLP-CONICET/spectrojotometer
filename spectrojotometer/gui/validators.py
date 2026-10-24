@@ -8,7 +8,7 @@ import numpy as np
 
 def show_number(val, tol=None):
     """
-    Formatea un número a la tolerancia dada.
+    Format a number to the given tolerance.
     """
     if np.isnan(val):
         return " nan "

@@ -362,7 +362,7 @@ def _bond_offset(tag):
     return np.asarray(tag, dtype=int)
 
 
-def equivalent_model(source, target, tol=0.1, method="auto"):
+def equivalent_model(source, target, tol=0.1, method="auto", mapping=None):
     """
     The source model rewritten in the cell and the order of sites of the
     target model: a MagneticModel with one site per site of the target, in
@@ -378,6 +378,18 @@ def equivalent_model(source, target, tol=0.1, method="auto"):
     are wrapped into the cell, and each bond of the source is replicated
     at every image of its first site, pointing to the site and cell of
     the result where its partner lies.
+
+    mapping: a site map edited by hand, one source site per target site,
+    as in map_configurations (by default, the one of site_maps). The
+    result is then the same supercell of the source with its sites in
+    another order: site t is the image of source site mapping[t] closest
+    to where site t is with the automatic map (the images are assigned
+    minimizing the total displacement). So the configurations of the
+    target mapped with this mapping keep their coefficients, as with the
+    automatic map. Each source site must appear in mapping as many times
+    as the supercell holds it (once, for cells of the same size); a site
+    that ends up farther than tol from where it was is logged as a
+    warning. The automatic map is still needed, to place the sites.
     """
     forward, _, used = site_maps(source, target, tol, method)
     missing = [t for t, s in enumerate(forward) if s < 0]
@@ -464,17 +476,80 @@ def equivalent_model(source, target, tol=0.1, method="auto"):
         values = source.site_properties[key]
         return [values[s] for s in forward]
 
+    species = per_site("magnetic_species")
+    g_factors = per_site("g_lande_factors")
+    spins = per_site("spin_repr")
+    if mapping is not None:
+        order = _edited_site_order(forward, mapping, positions, lattice, n_src, tol)
+        inverse = {u: t for t, u in enumerate(order)}
+        positions = positions[order]
+        species, g_factors, spins = (
+            [values[u] for u in order] for values in (species, g_factors, spins)
+        )
+        bond_lists = [
+            [(inverse[a], inverse[b], tag) for a, b, tag in bonds] for bonds in bond_lists
+        ]
+
     return MagneticModel(
         list(positions),
         list(lattice),
         bond_lists=bond_lists,
         bond_names=names,
         bond_distances=distances,
-        magnetic_species=per_site("magnetic_species"),
-        g_lande_factors=per_site("g_lande_factors"),
-        spin_repr=per_site("spin_repr"),
+        magnetic_species=species,
+        g_lande_factors=g_factors,
+        spin_repr=spins,
         model_label=f"{source.model_label} in the cell of {target.model_label}",
     )
+
+
+def _edited_site_order(forward, mapping, positions, lattice, n_src, tol):
+    """
+    For equivalent_model with an edited site map: order[t], the site of the
+    model built with the automatic map (forward, at positions) that becomes
+    site t, an image of source site mapping[t]. The images are assigned
+    minimizing the total distance to the automatic positions.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    mapping = [int(j) for j in mapping]
+    n_tgt = len(forward)
+    if len(mapping) != n_tgt:
+        raise ValueError(
+            f"the site map has {len(mapping)} entries; the target model has "
+            f"{n_tgt} sites"
+        )
+    if any(j < 0 or j >= n_src for j in mapping):
+        raise ValueError(
+            f"the site map must give a site of the source model (0 to "
+            f"{n_src - 1}) for every site of the target"
+        )
+    copies = n_tgt // n_src
+    counts = np.bincount(mapping, minlength=n_src)
+    wrong = [s for s in range(n_src) if counts[s] != copies]
+    if wrong:
+        raise ValueError(
+            f"the site map has source sites {wrong} {counts[wrong].tolist()} "
+            f"times; the cell of the target holds each one {copies} "
+            f"time{'s' if copies > 1 else ''}"
+        )
+    # Periodic distances between the sites of the automatic result.
+    diff = positions[:, None, :] - positions[None, :, :]
+    frac = np.linalg.solve(lattice.T, diff.reshape(-1, 3).T).T
+    frac -= np.round(frac)
+    dist = np.linalg.norm(frac @ lattice, axis=1).reshape(n_tgt, n_tgt)
+    allowed = np.asarray(forward)[None, :] == np.asarray(mapping)[:, None]
+    _, order = linear_sum_assignment(np.where(allowed, dist, dist.max() + 1e9))
+    moved = [t for t in range(n_tgt) if dist[t, order[t]] > tol]
+    if moved:
+        logger.warning(
+            "With the edited site map, sites %s of the result are farther than "
+            "%g from the sites of the target they stand for (up to %.3g).",
+            moved,
+            tol,
+            max(dist[t, order[t]] for t in moved),
+        )
+    return [int(u) for u in order]
 
 def _clamp_supercell_size(supercell_size):
     """An int, or one value per axis; each clamped to 1..4."""

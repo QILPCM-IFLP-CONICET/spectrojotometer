@@ -281,7 +281,8 @@ class ImportConfigWindow(Toplevel):
         Save, as a CIF file, the model of the configurations rewritten in
         the cell and order of sites of the current model: its own
         positions and couplings, with the sites of the current model (see
-        magnetic_model.equivalent_model).
+        magnetic_model.equivalent_model). If the site map was edited, its
+        sites follow the edited map, as the imported configurations.
         """
         if not self._ensure_model():
             return
@@ -289,18 +290,19 @@ class ImportConfigWindow(Toplevel):
         source, target = self._current_model(), self.app.model
         try:
             tol = float(self.tol.get())
-            model = equivalent_model(source, target, tol)
-        except ValueError as error:
-            messagebox.showerror("Export transformed model", str(error))
-            return
-        automatic = site_maps(source, target, tol)[0]
-        shown = self.sitemap.get().replace(",", " ").split()
-        if shown and shown != [str(i) for i in automatic]:
-            logger.warning(
-                "The site map was edited by hand; the exported model follows "
-                "the automatic one: %s",
-                automatic,
+            shown = [int(x) for x in self.sitemap.get().replace(",", " ").split()]
+            automatic = site_maps(source, target, tol)[0]
+            edited = bool(shown) and shown != list(automatic)
+            model = equivalent_model(
+                source, target, tol, mapping=shown if edited else None
             )
+        except ValueError as error:
+            messagebox.showerror(
+                "Export transformed model",
+                f"{error}." + ("\n\nCheck the site map." if self.sitemap.get() else ""),
+                parent=self,
+            )
+            return
         filename = fdlg.asksaveasfilename(
             initialdir=self.app.datafolder,
             title="Save the transformed model",
@@ -311,9 +313,10 @@ class ImportConfigWindow(Toplevel):
             return
         model.save_cif(filename)
         logger.info(
-            "%s, in the cell and order of sites of the current model, saved "
+            "%s, in the cell and order of sites of the current model%s, saved "
             "to %s (%d sites, couplings %s).",
             name,
+            " (with the edited site map)" if edited else "",
             filename,
             len(model.site_properties["coord_atomos"]),
             list(model.bonds),

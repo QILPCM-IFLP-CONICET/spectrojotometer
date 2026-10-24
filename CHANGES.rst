@@ -82,6 +82,15 @@ Changes
   visualbond, "Export transformed model..." in the import window; in
   ``map_configs``, ``--model-out``. ``save_cif`` quotes the name of the
   model when it has spaces (the CIF was misread).
+  ``equivalent_model(..., mapping=...)`` follows a site map edited by
+  hand, as ``map_configurations``: the result is the same supercell of
+  the source with its sites in the order of the map (each site, the image
+  of its source site closest to its place), so that the configurations
+  imported with that map keep their coefficients. The map must have each
+  source site as many times as the supercell holds it; sites that move
+  farther than the tolerance are logged. visualbond's import window
+  exports with the edited map (it used the automatic one, with a
+  warning).
 * Importing configurations from another model (visualbond's import
   window and ``map_configs``):
 

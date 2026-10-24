@@ -250,3 +250,103 @@ def test_equivalent_model_of_a_supercell():
         )
     with pytest.raises(ValueError, match="smaller"):
         equivalent_model(double, cell)
+
+
+# equivalent_model with a site map edited by hand: the same supercell of
+# the source, with its sites in the order of the map.
+
+
+def check_mapped(eq, source, target, mapping, num_confs=200, seed=0):
+    """For configurations s of the source, eq evaluated on s mapped with
+    `mapping` has the coefficients of s, times the ratio of cell sizes."""
+    n_src = len(source.site_properties["coord_atomos"])
+    copies = len(mapping) // n_src
+    rng = np.random.default_rng(seed)
+    for _ in range(num_confs):
+        conf = [int(x) for x in rng.integers(0, 2, n_src)]
+        (mapped,) = map_configurations(source, [conf], target, mapping=mapping)
+        np.testing.assert_allclose(
+            eq.coefficient_matrix([mapped])[0][:-1],
+            copies * source.coefficient_matrix([conf])[0][:-1],
+        )
+
+
+def swapped(mapping, a, b):
+    """The map with the source sites a and b exchanged."""
+    return [b if s == a else a if s == b else s for s in mapping]
+
+
+def test_the_automatic_map_gives_the_same_model(spinel):
+    from spectrojotometer.magnetic_model import equivalent_model, site_maps
+
+    source = distorted_reordered_copy(spinel)
+    forward = site_maps(source, spinel)[0]
+    a, b = equivalent_model(source, spinel), equivalent_model(source, spinel, mapping=forward)
+    np.testing.assert_allclose(
+        np.array(a.site_properties["coord_atomos"]), np.array(b.site_properties["coord_atomos"])
+    )
+    assert a.bonds == b.bonds
+
+
+@pytest.mark.parametrize("frame", ["same", "another"])
+def test_an_edited_map_reorders_the_sites(spinel, caplog, frame):
+    from spectrojotometer.magnetic_model import equivalent_model, site_maps
+
+    if frame == "same":
+        source = distorted_reordered_copy(spinel)
+    else:
+        source = moved_copy(spinel)
+        source.generate_bonds(0.02, [[0, 3.5]])
+    forward = site_maps(source, spinel)[0]
+    edited = swapped(forward, forward[0], forward[5])
+    with caplog.at_level("WARNING", logger="spectrojotometer"):
+        eq = equivalent_model(source, spinel, mapping=edited)
+    check_mapped(eq, source, spinel, edited)
+    with pytest.raises(AssertionError):  # the automatic model does not
+        check_mapped(equivalent_model(source, spinel), source, spinel, edited)
+    # Sites 0 and 5 stand for each other's sites: they moved.
+    assert "sites [0, 5] of the result are farther than" in caplog.text
+    # The same sites, in another order.
+    auto = np.array(equivalent_model(source, spinel).site_properties["coord_atomos"])
+    moved = np.array(eq.site_properties["coord_atomos"])
+    np.testing.assert_allclose(np.sort(auto, axis=0), np.sort(moved, axis=0), atol=1e-9)
+    assert {k: len(v["bonds"]) for k, v in eq.bonds.items()} == {
+        k: len(v["bonds"]) for k, v in source.bonds.items()
+    }
+
+
+def test_an_edited_map_in_a_supercell():
+    """Three sites with different gaps (0.7, 0.9, 1.4): exchanging two of
+    them is not a symmetry, and the automatic model does not describe the
+    edited map."""
+    from spectrojotometer.magnetic_model import equivalent_model
+
+    cell = chain([0, 0.7, 1.6], 3)
+    cell.generate_bonds(0.02, [[0, 1.5]])
+    double = chain([0, 0.7, 1.6, 3, 3.7, 4.6], 6)
+    edited = [1, 0, 2, 1, 0, 2]  # sites 0 and 1 exchanged
+    eq = equivalent_model(cell, double, mapping=edited)
+    check_mapped(eq, cell, double, edited)
+    with pytest.raises(AssertionError):
+        check_mapped(equivalent_model(cell, double), cell, double, edited)
+    # Each site is the image of its source site closest to its place.
+    x = np.array(eq.site_properties["coord_atomos"])[:, 0]
+    assert x.tolist() == pytest.approx([0.7, 0.0, 1.6, 3.7, 3.0, 4.6])
+
+
+@pytest.mark.parametrize(
+    "mapping, message",
+    [
+        ([0, 0, 0, 1], r"source sites \[0, 1\] \[3, 1\] times; the cell of the target holds each one 2 times"),
+        ([0, 1, 0], "the site map has 3 entries; the target model has 4 sites"),
+        ([0, 1, 0, 2], "must give a site of the source model"),
+        ([0, 1, -1, 1], "must give a site of the source model"),
+    ],
+)
+def test_invalid_edited_maps(mapping, message):
+    from spectrojotometer.magnetic_model import equivalent_model
+
+    cell = chain([0, 1], 2)
+    cell.generate_bonds(0.02, [[0, 1.5]])
+    with pytest.raises(ValueError, match=message):
+        equivalent_model(cell, chain([0, 1, 2, 3], 4), mapping=mapping)

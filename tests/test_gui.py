@@ -527,3 +527,63 @@ def test_an_option_that_cannot_be_applied_is_reverted(app, monkeypatch, bcc_file
         assert (window.sitemap.get(), window.energy_scale, window._current_model()) == before
     finally:
         window.close_window()
+
+
+def test_export_with_an_edited_site_map(app, monkeypatch, tmp_path):
+    """The exported model follows the edited site map, as the imported
+    configurations (it followed the automatic one, with a warning)."""
+    from spectrojotometer.gui import importconfig
+    from spectrojotometer.gui import main as gui_main
+    from spectrojotometer.magnetic_model import MagneticModel
+    from spectrojotometer.model_io import magnetic_model_from_file
+
+    def chain(xs, period):  # gaps 0.7, 0.9, 1.4: exchanging sites is not a symmetry
+        model = MagneticModel(
+            [np.array([x, 0.0, 0.0]) for x in xs],
+            [np.array([period, 0.0, 0.0]), np.array([0.0, 5.0, 0.0]), np.array([0.0, 0.0, 5.0])],
+            magnetic_species=["Cu"] * len(xs),
+        )
+        model.generate_bonds(0.02, [[0, 1.5]])
+        return model
+
+    chain([0, 0.7, 1.6, 3, 3.7, 4.6], 6.0).save_cif(str(tmp_path / "double.cif"))
+    chain([0, 0.7, 1.6], 3.0).save_cif(str(tmp_path / "cell.cif"))
+    (tmp_path / "cell.spin").write_text("10.0\t[0, 1, 1]\t# a\n20.0\t[1, 0, 1]\t# b\n")
+    out = tmp_path / "transformed.cif"
+    errors = []
+    monkeypatch.setattr(gui_main.fdlg, "askopenfilename", lambda **k: str(tmp_path / "double.cif"))
+    app.open_model()
+    files = iter([str(tmp_path / "cell.cif"), str(tmp_path / "cell.spin")])
+    monkeypatch.setattr(importconfig.fdlg, "askopenfilename", lambda **k: next(files))
+    monkeypatch.setattr(importconfig.fdlg, "asksaveasfilename", lambda **k: str(out))
+    monkeypatch.setattr(importconfig.messagebox, "showerror", lambda *a, **k: errors.append(a))
+    monkeypatch.setattr(app.root, "wait_window", lambda *a: None)
+    window = importconfig.ImportConfigWindow(app)
+    try:
+        window.optmodels["menu"].invoke(0)
+        assert window.sitemap.get() == "0, 1, 2, 0, 1, 2"
+        window.sitemap.delete(0, tkinter.END)
+        window.sitemap.insert(0, "1, 0, 2, 1, 0, 2")  # sites 0 and 1 exchanged
+        find_widget(window, tkinter.Button, "Load Configuration from File").invoke()
+        find_widget(window, tkinter.Button, "Import").invoke()
+        window.export_model()
+        assert not errors
+        source = magnetic_model_from_file(str(tmp_path / "cell.cif"))
+        exported = magnetic_model_from_file(str(out))
+        imported = window.outputconfs.get("1.0", tkinter.END)
+        for conf, energy in (([0, 1, 1], 20.0), ([1, 0, 1], 40.0)):  # twice the cell
+            mapped = [conf[j] for j in (1, 0, 2, 1, 0, 2)]
+            assert f"{energy}\t{mapped}" in imported
+            np.testing.assert_allclose(
+                exported.coefficient_matrix([mapped])[0][:-1],
+                2 * source.coefficient_matrix([conf])[0][:-1],
+            )
+        # A map that cannot be a supercell of the other model.
+        out.unlink()
+        window.sitemap.delete(0, tkinter.END)
+        window.sitemap.insert(0, "0, 0, 0, 1, 1, 2")
+        window.export_model()
+        assert errors and "the cell of the target holds each one 2 times" in errors[0][1]
+        assert not out.exists()
+    finally:
+        window.close_window()

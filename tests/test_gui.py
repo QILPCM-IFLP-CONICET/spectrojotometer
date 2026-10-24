@@ -260,6 +260,8 @@ def test_import_from_a_supercell(app, monkeypatch, tmp_path):
 
     try:
         window.optmodels["menu"].invoke(0)  # "[other model]"
+        # The menu button shows the chosen file (it kept "[other model]").
+        assert window.optmodels.cget("text") == str(tmp_path / "double.cif")
         assert window.sitemap.get() == "0, 1, 2"
         assert window.energy_scale == 0.5
         button("Load Configuration from File").invoke()
@@ -384,5 +386,144 @@ def test_export_transformed_model(app, monkeypatch, tmp_path):
             np.testing.assert_array_equal(
                 exported.coefficient_matrix([conf]), app.model.coefficient_matrix([conf])
             )
+    finally:
+        window.close_window()
+
+
+# The import window has its own primitive-cell option: the other model can
+# be read in its conventional cell while the current one is primitive (it
+# used the option of the main window for both).
+
+ROTATIONS_CIF = """data_p2
+_symmetry_space_group_name_H-M   'P 1 2 1'
+_cell_length_a   5.0
+_cell_length_b   6.0
+_cell_length_c   7.0
+_cell_angle_alpha   90.0
+_cell_angle_beta    90.0
+_cell_angle_gamma   90.0
+loop_
+_symmetry_equiv_pos_site_id
+_symmetry_equiv_pos_as_xyz
+1 'x, y, z'
+2 '-x, y, -z'
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+Cu1 Cu 0.1 0.2 0.3
+"""
+
+
+def find_widget(window, cls, text):
+    stack = [window]
+    while stack:
+        widget = stack.pop()
+        stack.extend(widget.winfo_children())
+        if isinstance(widget, cls) and widget.cget("text") == text:
+            return widget
+    raise LookupError(text)
+
+
+@pytest.fixture
+def bcc_files(tmp_path):
+    from .test_struct_loading import write_struct
+
+    struct = tmp_path / "bcc.struct"
+    write_struct(struct, "B", [("Cr1", [(0.0, 0.0, 0.0)])])
+    (tmp_path / "bcc.spin").write_text(
+        "# conventional cell, two sites\n"
+        "10.0\t[1, 1]\t# ferro\n"
+        "20.0\t[0, 1]\t# antiferro\n"
+    )
+    return struct, tmp_path / "bcc.spin"
+
+
+def open_import_window(app, monkeypatch, main_file, files, primitive):
+    from spectrojotometer.gui import importconfig
+    from spectrojotometer.gui import main as gui_main
+
+    app.primitive_cell_var.set(primitive)
+    monkeypatch.setattr(gui_main.fdlg, "askopenfilename", lambda **k: str(main_file))
+    app.open_model()
+    files = iter(str(f) for f in files)
+    monkeypatch.setattr(importconfig.fdlg, "askopenfilename", lambda **k: next(files))
+    monkeypatch.setattr(app.root, "wait_window", lambda *a: None)
+    return importconfig.ImportConfigWindow(app)
+
+
+def test_import_from_the_conventional_cell_into_the_primitive_one(app, monkeypatch, bcc_files):
+    struct, spin = bcc_files
+    window = open_import_window(app, monkeypatch, struct, [struct, spin], primitive=True)
+    try:
+        assert len(app.model.site_properties["coord_atomos"]) == 1
+        primitive = find_widget(window, tkinter.Checkbutton, "Primitive cell")
+        assert window.primitive_var.get() is True  # as the main window
+        primitive.invoke()  # conventional
+        window.optmodels["menu"].invoke(0)  # "[other model]": bcc.struct
+        assert window.energy_scale == 0.5
+        find_widget(window, tkinter.Button, "Load Configuration from File").invoke()
+        find_widget(window, tkinter.Button, "Import").invoke()
+        out = window.outputconfs.get("1.0", tkinter.END)
+        assert "5.0\t[1]\t# ferro" in out
+        assert "# skipped, not periodic with the current cell: 20.0" in out
+    finally:
+        window.close_window()
+
+
+def test_changing_the_option_reloads_the_other_model(app, monkeypatch, bcc_files):
+    struct, _ = bcc_files
+    window = open_import_window(app, monkeypatch, struct, [struct], primitive=True)
+    try:
+        window.optmodels["menu"].invoke(0)
+        assert window.energy_scale == 1.0  # primitive, as the current model
+        find_widget(window, tkinter.Checkbutton, "Primitive cell").invoke()
+        assert window.energy_scale == 0.5  # reloaded in the conventional cell
+        assert window.sitemap.get() == "0"
+        assert window.selected_model.get() == str(struct)
+    finally:
+        window.close_window()
+
+
+def test_a_model_without_a_primitive_cell_is_reported(app, monkeypatch, bcc_files, tmp_path):
+    """Its ValueError escaped from the Tk callback."""
+    from spectrojotometer.gui import importconfig
+
+    struct, _ = bcc_files
+    cif = tmp_path / "rotations.cif"
+    cif.write_text(ROTATIONS_CIF)
+    errors = []
+    monkeypatch.setattr(importconfig.messagebox, "showerror", lambda *a, **k: errors.append(a))
+    window = open_import_window(app, monkeypatch, struct, [cif, cif], primitive=True)
+    try:
+        window.optmodels["menu"].invoke(0)
+        assert errors and "primitive" in errors[0][1]
+        assert window.selected_model.get() != str(cif)
+        find_widget(window, tkinter.Checkbutton, "Primitive cell").invoke()
+        window.optmodels["menu"].invoke(0)  # conventional: it can be read
+        assert window.selected_model.get() == str(cif)
+        assert window.energy_scale == 0.5  # 1 site, here 2 (the rotation)
+    finally:
+        window.close_window()
+
+
+def test_an_option_that_cannot_be_applied_is_reverted(app, monkeypatch, bcc_files, tmp_path):
+    from spectrojotometer.gui import importconfig
+
+    struct, _ = bcc_files
+    cif = tmp_path / "rotations.cif"
+    cif.write_text(ROTATIONS_CIF)
+    errors = []
+    monkeypatch.setattr(importconfig.messagebox, "showerror", lambda *a, **k: errors.append(a))
+    window = open_import_window(app, monkeypatch, struct, [cif], primitive=False)
+    try:
+        window.optmodels["menu"].invoke(0)
+        before = (window.sitemap.get(), window.energy_scale, window._current_model())
+        find_widget(window, tkinter.Checkbutton, "Primitive cell").invoke()
+        assert errors and "primitive" in errors[0][1]
+        assert window.primitive_var.get() is False  # reverted
+        assert (window.sitemap.get(), window.energy_scale, window._current_model()) == before
     finally:
         window.close_window()

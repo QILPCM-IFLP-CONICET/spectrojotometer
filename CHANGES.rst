@@ -102,6 +102,15 @@ Changes
   * Loading the configurations before choosing their model in the menu
     left the site map empty, and Import failed; the window now asks for
     the model when needed.
+  * The import window has its own "Primitive cell" option (by default,
+    the one of the main window, which it used for both models): the
+    configurations of a conventional cell can be imported into a model in
+    the primitive cell, and vice versa. Changing it reads the other model
+    again and updates the site map. A model that has no primitive cell
+    (point-group rotations) is reported, and the option reverted; its
+    ``ValueError`` escaped from the Tk callback.
+  * After choosing the file of the other model, the menu kept showing
+    "[other model]".
   * ``site_map`` (and ``map_configurations``, ``compatible_configurations``,
     ``map_configs --method``) can align the structures with pymatgen's
     ``StructureMatcher``, for models with a different origin, orientation

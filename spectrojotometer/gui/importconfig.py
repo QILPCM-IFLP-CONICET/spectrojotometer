@@ -17,7 +17,9 @@ from tkinter import (
     NORMAL,
     RIGHT,
     TOP,
+    BooleanVar,
     Button,
+    Checkbutton,
     Entry,
     Frame,
     Label,
@@ -57,7 +59,9 @@ class ImportConfigWindow(Toplevel):
         self.transient(app.root)
         self.model = app.model
         self.configurations = ([], [], [])
+        # The other models, by (file, primitive cell), and their files.
         self.models = {}
+        self.filenames = []
         self.parameters = {}
         self.energy_scale = 1.0
 
@@ -69,6 +73,13 @@ class ImportConfigWindow(Toplevel):
         self.selected_model.trace_add("write", self.onmodelselect)
         self.optmodels = OptionMenu(row, self.selected_model, "[other model]")
         self.optmodels.pack(side=LEFT, fill=X)
+        # How to read the other model, independently of the current one:
+        # e.g. its conventional cell, for a current model in the primitive
+        # cell. By default, as the main window.
+        self.primitive_var = BooleanVar(value=app.primitive_cell_var.get())
+        self._reverting = False
+        Checkbutton(row, text="Primitive cell", variable=self.primitive_var).pack(side=LEFT)
+        self.primitive_var.trace_add("write", self.onprimitivechange)
         self.sitemap = Entry(row)
         self.sitemap.pack(side=RIGHT)
         Label(row, text="site map").pack(side=RIGHT)
@@ -126,8 +137,10 @@ class ImportConfigWindow(Toplevel):
         app.root.wait_window(self)
 
     def onmodelselect(self, *args):
-        """On model select"""
-        if self.selected_model.get() == "[other model]":
+        """On model select: ask for the file of "[other model]", or show
+        the site map of the selected one."""
+        name = self.selected_model.get()
+        if name == "[other model]":
             filename = fdlg.askopenfilename(
                 initialdir=self.app.datafolder + "/",
                 title="Select file to open",
@@ -141,34 +154,94 @@ class ImportConfigWindow(Toplevel):
             if filename == "":
                 return
             self.app.datafolder = str(Path(filename).parent)
-            newmodel = magnetic_model_from_file(
-                filename=filename, primitive_cell=self.app.primitive_cell_var.get()
-            )
-            self.models[filename] = newmodel
-            menu = self.optmodels["menu"]
-            menu.delete(0, "end")
-            menu.add_command(
-                label="[other model]",
-                command=lambda value="[other model]": self.selected_model.set(
-                    "[other model]"
-                ),
-            )
-            logger.debug("updating menu")
-            for key in self.models:
-                menu.add_command(
-                    label=key,
-                    command=lambda value=key: self.selected_model.set(value),
-                )
+            model = self._load_model(filename)
+            if model is None:
+                return
+            if filename not in self.filenames:
+                self.filenames.append(filename)
+                self._update_menu()
+            # Tcl disables the traces of a variable while one of them runs:
+            # this does not call onmodelselect again, nor update the text of
+            # the menu button (it kept showing "[other model]"), which is
+            # read again when its variable is assigned.
             self.selected_model.set(filename)
-            self.update_idletasks()
-            #  self.optmodels.set(filename)
-        # xxxxxxxxx
+            self.optmodels.configure(textvariable=self.selected_model)
+            self._show_site_map(filename, model)
+            return
+        model = self._load_model(name)
+        if model is not None:
+            self._show_site_map(name, model)
+
+    def onprimitivechange(self, *args):
+        """Read the selected model again, with the new cell option."""
+        name = self.selected_model.get()
+        if self._reverting or name not in self.filenames:
+            return
+        model = self._load_model(name)
+        if model is None:
+            # Keep the previous option, and the model read with it.
+            self._reverting = True
+            try:
+                self.primitive_var.set(not self.primitive_var.get())
+            finally:
+                self._reverting = False
+            return
+        self._show_site_map(name, model)
+
+    def _load_model(self, filename):
+        """
+        The model of filename, read with the cell option of the window
+        (cached). If it cannot be read so, show why and return None.
+        """
+        primitive = self.primitive_var.get()
+        key = (filename, primitive)
+        if key not in self.models:
+            try:
+                self.models[key] = magnetic_model_from_file(
+                    filename=filename, primitive_cell=primitive
+                )
+            except ValueError as error:
+                hint = (
+                    "\n\nUncheck \"Primitive cell\" to read it in its "
+                    "conventional cell." if primitive else ""
+                )
+                messagebox.showerror("Import", f"{error}{hint}", parent=self)
+                return None
+        return self.models[key]
+
+    def _current_model(self):
+        """The selected model, read with the current cell option, if any."""
+        return self.models.get((self.selected_model.get(), self.primitive_var.get()))
+
+    def _update_menu(self):
+        menu = self.optmodels["menu"]
+        menu.delete(0, "end")
+        menu.add_command(
+            label="[other model]",
+            command=lambda: self.selected_model.set("[other model]"),
+        )
+        logger.debug("updating menu")
+        for key in self.filenames:
+            menu.add_command(
+                label=key,
+                command=lambda value=key: self.selected_model.set(value),
+            )
+
+    def _show_site_map(self, name, model1):
+        """The site map from the current model to model1, and the scale of
+        the energies."""
         tol = float(self.tol.get())
-        model1 = self.models[self.selected_model.get()]
         model2 = self.app.model
         size1 = len(model1.site_properties["coord_atomos"])
         size2 = len(model2.site_properties["coord_atomos"])
         self.energy_scale = float(size2) / float(size1)
+        logger.info(
+            "%s: %d sites (%s cell); energies scaled by %g.",
+            name,
+            size1,
+            "primitive" if self.primitive_var.get() else "conventional",
+            self.energy_scale,
+        )
         if self.energy_scale < 1.0:
             # Only the configurations periodic with the current cell can be
             # imported; map_confs checks each one.
@@ -176,7 +249,7 @@ class ImportConfigWindow(Toplevel):
                 "The cell of the current model is smaller than the one of %s: "
                 "only its configurations periodic with the current cell can "
                 "be imported.",
-                self.selected_model.get(),
+                name,
             )
         # For each site of the current model, the site of the other model at
         # the same position: comparing positions or, if that does not find
@@ -187,7 +260,7 @@ class ImportConfigWindow(Toplevel):
                 "Sites %s of the current model have no counterpart in %s: "
                 "edit the site map, or increase the length tolerance.",
                 [i for i, j in enumerate(dictatoms) if j < 0],
-                self.selected_model.get(),
+                name,
             )
         elif method == "structure":
             logger.info(
@@ -195,10 +268,10 @@ class ImportConfigWindow(Toplevel):
                 "(different origin, orientation or cell); the site map comes "
                 "from aligning both structures with pymatgen's "
                 "StructureMatcher.",
-                self.selected_model.get(),
+                name,
             )
         else:
-            logger.info("Site map of %s: %s", self.selected_model.get(), dictatoms)
+            logger.info("Site map of %s: %s", name, dictatoms)
         self.dictatoms = list(dictatoms)
         self.sitemap.delete(0, END)
         self.sitemap.insert(0, dictatoms.__str__()[1:-1])
@@ -213,7 +286,7 @@ class ImportConfigWindow(Toplevel):
         if not self._ensure_model():
             return
         name = self.selected_model.get()
-        source, target = self.models[name], self.app.model
+        source, target = self._current_model(), self.app.model
         try:
             tol = float(self.tol.get())
             model = equivalent_model(source, target, tol)
@@ -252,10 +325,10 @@ class ImportConfigWindow(Toplevel):
         ask for it now (before, loading configurations or importing
         without choosing it first failed). Returns whether there is one.
         """
-        if self.selected_model.get() not in self.models:
+        if self._current_model() is None:
             # Triggers onmodelselect, which asks for the file.
             self.selected_model.set("[other model]")
-        return self.selected_model.get() in self.models
+        return self._current_model() is not None
 
     def close_window(self):
         """close the window"""
@@ -306,7 +379,7 @@ class ImportConfigWindow(Toplevel):
         if not self._ensure_model():
             return
         name = self.selected_model.get()
-        source, target = self.models[name], self.app.model
+        source, target = self._current_model(), self.app.model
         try:
             mapping = [int(x) for x in self.sitemap.get().replace(",", " ").split()]
             tol = float(self.tol.get())

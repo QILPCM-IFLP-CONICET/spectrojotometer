@@ -36,7 +36,9 @@ def run_ising_mc(spins, bonds, J_vals, E0,
         monte_carlo.adapter.magnetic_model_to_ising (initial spins, the
         pairs (i, j) of each bond, its coupling, and the base energy).
     n_equil, n_sweeps: sweeps discarded at each temperature, and sweeps
-        averaged.
+        averaged. A sweep flips N spins on average: N attempts with
+        Metropolis; with Wolff, a fixed number of clusters, estimated at
+        each temperature while equilibrating.
     algorithm: "wolff" (cluster updates; only for unfrustrated models,
         which are mapped onto ferromagnetic ones by a gauge transform),
         "metropolis", "pt" (parallel tempering), or "auto": Wolff if the
@@ -111,7 +113,7 @@ def run_ising_mc(spins, bonds, J_vals, E0,
             progress_callback=notify,
         )
     else:
-        raise ValueError(f"Algoritmo desconocido: {algorithm}")
+        raise ValueError(f"Unknown algorithm: {algorithm}")
 
     results["frustrated"] = bool(frustrated)
     results["frustration_cycle"] = cycle

@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from ._jit_kernels import _wolff_step_kernel
+from ._jit_kernels import _wolff_clusters_kernel
 from .ising_engine import IsingMonteCarlo
 
 
@@ -58,32 +58,83 @@ class WolffCluster(IsingMonteCarlo):
         self._build_neighbor_lists()
         self._energy_dirty = True
 
-        # Preallocated buffers for the Wolff kernel
-        self._cluster_mask = np.zeros(self.N, dtype=np.bool_)
+        # Each site is pushed at most once onto the stack of a cluster.
         self._cluster_stack = np.zeros(self.N, dtype=np.int64)
+        # Clusters grown and spins flipped so far (diagnostics: the mean
+        # cluster size, n_flipped / n_clusters, measures the correlations).
+        self.n_clusters = 0
+        self.n_flipped = 0
+        self.set_temperature(self.T)
 
     # ---------- dynamics ----------
 
-    def wolff_step(self):
-        size = _wolff_step_kernel(
+    def set_temperature(self, T):
+        super().set_temperature(T)
+        # Probability of adding each neighbour to a cluster.
+        self._p_add = -np.expm1(-2.0 * self.beta * self._nbr_J_flat)
+        # Clusters per sweep: estimated again at each temperature.
+        self.clusters_per_sweep = None
+        self._estimate = [0, 0]  # clusters, flipped spins, at this temperature
+
+    def _flip_clusters(self, min_flipped, max_clusters):
+        clusters, flipped = _wolff_clusters_kernel(
             self.spins,
             self._nbr_idx_flat,
-            self._nbr_J_flat,
+            self._p_add,
             self._nbr_start,
-            self.beta,
             self._jit_state,
-            self._cluster_mask,
             self._cluster_stack,
+            min_flipped,
+            max_clusters,
         )
+        self.n_clusters += int(clusters)
+        self.n_flipped += int(flipped)
         self._energy_dirty = True
-        return size
+        return int(clusters), int(flipped)
+
+    def wolff_step(self):
+        """Grow one cluster and flip it; return its size."""
+        return self._flip_clusters(1, 1)[1]
+
+    def equilibrate(self, n_sweeps):
+        """
+        Equilibration sweeps, which also estimate the mean cluster size at
+        this temperature, and so the number of clusters of a sweep.
+
+        Each of these sweeps grows clusters until N spins have been
+        flipped. That rule cannot be used to measure: the state where the
+        flipped spins reach N depends on the trajectory, and it is not
+        distributed as the Boltzmann distribution. It does no harm here,
+        where the states are discarded.
+        """
+        for _ in range(n_sweeps):
+            clusters, flipped = self._flip_clusters(self.N, self.N)
+            self._estimate[0] += clusters
+            self._estimate[1] += flipped
+        if self._estimate[1]:
+            self.clusters_per_sweep = max(
+                1, round(self.N * self._estimate[0] / self._estimate[1])
+            )
 
     def metropolis_sweep(self, n_clusters=None):
-        """A Wolff sweep: N cluster attempts."""
+        """
+        A Wolff sweep: a fixed number of clusters, clusters_per_sweep,
+        that flips N spins on average (N divided by the mean cluster size,
+        estimated by equilibrate; if it was not called at this
+        temperature, a few sweeps are run first to estimate it).
+
+        Its cost is proportional to N whatever the temperature, like a
+        Metropolis sweep, which it replaces in sample: about N clusters
+        of one site at high temperature, about one cluster of N sites in
+        the ordered phase. (A sweep used to be N clusters, so it cost
+        O(N^2) in the ordered phase.) With n_clusters, flip that many
+        clusters instead. Returns the number of flipped spins.
+        """
         if n_clusters is None:
-            n_clusters = self.N
-        for _ in range(n_clusters):
-            self.wolff_step()
+            if self.clusters_per_sweep is None:
+                self.equilibrate(10)
+            n_clusters = self.clusters_per_sweep
+        return self._flip_clusters(np.iinfo(np.int64).max, int(n_clusters))[1]
 
     # ---------- measurement ----------
     def sample(self, n_sweeps, measure_every=1):

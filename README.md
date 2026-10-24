@@ -267,7 +267,9 @@ for unfrustrated models, which are mapped onto ferromagnetic ones by a
 gauge transformation), `"metropolis"`, or `"pt"` (parallel tempering). By
 default (`"auto"`), Wolff is used unless the model is frustrated, as in this
 example: the magnetic sites of the spinel form a pyrochlore lattice, which
-an antiferromagnetic coupling frustrates.
+an antiferromagnetic coupling frustrates. A sweep flips N spins on average
+(N attempts with Metropolis; with Wolff, as many clusters as needed for N
+spins at that temperature), so its cost is proportional to N.
 
 The kernels are compiled with numba. In visualbond, the Monte Carlo tab
 runs these simulations; its table of couplings starts from the values

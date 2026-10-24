@@ -83,6 +83,10 @@ The Monte Carlo simulation (`spectrojotometer/monte_carlo/`):
   exact energy of a small antiferromagnetic ring, the warning about
   disagreeing replicas; the couplings editor and the panel, including
   the scrolling of its controls in a short window.
+- `test_monte_carlo_wolff.py` — a Wolff sweep flips about N spins (a fixed
+  number of clusters, estimated at each temperature), and the algorithm
+  samples the Boltzmann distribution: energy, specific heat and staggered
+  magnetization against the exact enumeration of a 4x4 antiferromagnet.
 - `test_mc_gui.py` — the adapter and the Monte Carlo panel.
 
 Interfaces and packaging:

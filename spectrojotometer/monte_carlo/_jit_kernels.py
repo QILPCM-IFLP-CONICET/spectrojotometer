@@ -111,53 +111,46 @@ def _metropolis_sweep_kernel(spins, nbr_idx, nbr_J, nbr_start, beta, state):
 # ---------------------------------------------------------------------------
 
 @njit(cache=True)
-def _wolff_step_kernel(spins, nbr_idx, nbr_J, nbr_start, beta, state,
-                       cluster_mask, stack):
-    """A Wolff step: grow a cluster from a random seed and flip it.
+def _wolff_clusters_kernel(spins, nbr_idx, nbr_p_add, nbr_start, state, stack,
+                           min_flipped, max_clusters):
+    """Wolff clusters, until min_flipped spins have been flipped in total
+    or max_clusters clusters have been flipped, whatever comes first.
 
-    The edge (u, v) is only activated if spins[u] == spins[v]: this is the
-    alignment condition of the Wolff algorithm, without which the cluster
-    crosses domain walls and disorders the system. (The couplings are
-    those of the gauge basis, all of them ferromagnetic; see WolffCluster.)
+    Each cluster grows from a random seed. A neighbour v of a site of the
+    cluster is added with probability nbr_p_add (1 - exp(-2 beta J), the
+    couplings being those of the gauge basis, all of them ferromagnetic;
+    see WolffCluster) only if spins[v] still has the sign of the cluster
+    before the flip: this is the alignment condition of the algorithm,
+    without which the cluster crosses domain walls. Every site is flipped
+    as soon as it is added, so the flip itself marks it as visited, and
+    the cost of a cluster is proportional to its size (each site is
+    pushed at most once onto stack, of length N).
+
+    Returns (number of clusters, number of flipped spins).
     """
     N = spins.shape[0]
-    for k in range(N):
-        cluster_mask[k] = False
-
-    seed_site = _rand_int(state, N)
-    cluster_mask[seed_site] = True
-    stack[0] = seed_site
-    top = 1
-    size = 1
-    cluster_spin = spins[seed_site]
-
-    while top > 0:
-        top -= 1
-        u = stack[top]
-        a = nbr_start[u]
-        b = nbr_start[u + 1]
-        for k in range(a, b):
-            v = nbr_idx[k]
-            if cluster_mask[v]:
-                continue
-            # Alignment condition: only add neighbours with the same sign as
-            # the spin of the cluster (equivalent to spins[u], since the
-            # whole cluster shares the sign before the flip).
-            if spins[v] != cluster_spin:
-                continue
-            J = nbr_J[k]
-            p_add = 1.0 - np.exp(-2.0 * beta * J)
-            if _rand_double(state) < p_add:
-                cluster_mask[v] = True
-                stack[top] = v
-                top += 1
-                size += 1
-
-    for k in range(N):
-        if cluster_mask[k]:
-            spins[k] = -spins[k]
-
-    return size
+    clusters = 0
+    flipped = 0
+    while flipped < min_flipped and clusters < max_clusters:
+        seed_site = _rand_int(state, N)
+        cluster_spin = spins[seed_site]
+        spins[seed_site] = -cluster_spin
+        stack[0] = seed_site
+        top = 1
+        size = 1
+        while top > 0:
+            top -= 1
+            u = stack[top]
+            for k in range(nbr_start[u], nbr_start[u + 1]):
+                v = nbr_idx[k]
+                if spins[v] == cluster_spin and _rand_double(state) < nbr_p_add[k]:
+                    spins[v] = -cluster_spin
+                    stack[top] = v
+                    top += 1
+                    size += 1
+        clusters += 1
+        flipped += size
+    return clusters, flipped
 
 # ---------------------------------------------------------------------------
 # Warmup (optional: call it before benchmarks)
@@ -174,9 +167,8 @@ def warmup():
     nbr_J = np.ones(8, dtype=np.float64)
     nbr_start = np.array([0, 2, 4, 6, 8], dtype=np.int64)
     state = np.array([_GOLDEN], dtype=np.uint64)
-    mask = np.zeros(4, dtype=np.bool_)
     stack = np.zeros(4, dtype=np.int64)
 
     _interaction_energy_kernel(spins, bonds, J_vals)
     _metropolis_sweep_kernel(spins, nbr_idx, nbr_J, nbr_start, 1.0, state)
-    _wolff_step_kernel(spins, nbr_idx, nbr_J, nbr_start, 1.0, state, mask, stack)
+    _wolff_clusters_kernel(spins, nbr_idx, nbr_J * 0.5, nbr_start, state, stack, 4, 4)

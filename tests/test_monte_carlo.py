@@ -340,12 +340,8 @@ class TestPerformance:
 class TestPhysics:
     """Validacion fisica contra valores de literatura.
 
-    Runtimes (Numba activo, ~3 ms/sweep a L=16):
-      - test_2d_ising_tc_wolff:  ~25 s
-      - test_2d_ising_tc_pt:     ~25 s
-      - test_3d_ising_tc_wolff:  ~30 s
-      - test_curie_weiss:        ~10 s
-      Total: ~90 s
+    Runtimes (Numba activo): menos de 1 s cada uno (un sweep de Wolff
+    voltea N espines en promedio, como uno de Metropolis).
 
     Sobre el estimador de Tc con Wolff
     ----------------------------------

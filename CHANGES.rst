@@ -109,6 +109,15 @@ Changes
     inside the same cell (37.5% of the bonds of a 2x2x2 supercell of
     ``cromita_ortogonal``). It also accepts offsets as tuples, takes the
     number of sites from the model, and rejects couplings without a value.
+  * A sweep of the Wolff algorithm was N clusters: in the ordered phase,
+    where a cluster covers the whole lattice, it cost O(N^2) (a 500-site
+    sweep took 200 times longer than now). It is now a fixed number of
+    clusters that flips N spins on average, estimated at each temperature
+    while equilibrating, and the clusters are grown inside a numba kernel
+    that flips each site as it is added. Its cost is proportional to N,
+    like a Metropolis sweep. (Stopping each sweep as soon as N spins have
+    been flipped would bias the measurements.) ``WolffCluster`` counts the
+    clusters and the flipped spins (``n_clusters``, ``n_flipped``).
   * The values of the couplings editor of the Monte Carlo tab were read
     and ignored. The editor itself (``gui/couplings_editor.py``) was
     missing and has been rewritten.

@@ -34,6 +34,12 @@ in the CIF's asymmetric unit (e.g. 4 instead of 16 for ZnCr2O4) and
 switches the model's Bravais vectors to a primitive basis, instead of
 expanding atoms to fill the conventional cell.
 
+WIEN2k `.struct` files are read too. Their lengths are in bohr unless the
+file says `unit=ang`, and the model is in angstrom, like the ones read
+from CIF files; for centred lattices, `primitive_cell` chooses between
+the conventional and the primitive cell, as for CIF files. See the main
+README.
+
 
 
 Visual Bond
@@ -285,27 +291,40 @@ As an example, by run
 
 *) map_configs
 
-    usage: map_configs [-h] [--tol tolerance] [--fill {0,1}] [-v]
+    usage: map_configs [-h] [--tol tolerance] [--method {auto,position,structure}]
+                       [--model-out cif file] [--fill {0,1}] [-v]
                        modelfile1 modelfile2 conffile outfile
 
     Translate the spin configurations of a source model into configurations of a
     target model: each site of the target takes the spin of the site of the source
     at the same position (up to a translation of the source lattice). The energies
     are scaled by the ratio between the number of sites of the target and of the
-    source cells.
+    source cells. Configurations that are not periodic with the lattice of the
+    target (when it is smaller than the source cell) cannot be represented: they
+    are written as comments.
 
     positional arguments:
-      modelfile1       model file of the source model
-      modelfile2       model file of the target model
-      conffile         configurations of the source model
-      outfile          output file; "-" prints to the standard output
+      modelfile1            model file of the source model
+      modelfile2            model file of the target model
+      conffile              configurations of the source model
+      outfile               output file; "-" prints to the standard output
 
     options:
-      -h, --help       show this help message and exit
-      --tol tolerance  largest distance between matching sites (default 0.1)
-      --fill {0,1}     spin for the sites of the target without counterpart in the
-                       source (by default, such sites are an error)
-      -v, --verbose    Show progress messages (-v) or detailed diagnostics (-vv).
+      -h, --help            show this help message and exit
+      --tol tolerance       largest distance between matching sites (default 0.1)
+      --method {auto,position,structure}
+                            how to match the sites: comparing positions (both
+                            models in the same frame), aligning the structures
+                            with pymatgen's StructureMatcher (different origin,
+                            orientation or cell), or auto: positions if every site
+                            is found, otherwise the alignment (default)
+      --model-out cif file  also save the source model rewritten in the cell and
+                            order of sites of the target (its own positions and
+                            couplings) to this CIF file
+      --fill {0,1}          spin for the sites of the target without counterpart
+                            in the source (by default, such sites are an error)
+      -v, --verbose         Show progress messages (-v) or detailed diagnostics
+                            (-vv).
 
     For example, mapping the configurations of example1 onto the same
     model (each site onto itself):
@@ -319,7 +338,19 @@ As an example, by run
 
     The output is a configuration file: it can be used as input of the
     other commands. A site of the target model without counterpart in the
-    source model is an error, unless --fill gives the spin to use.
+    source model is an error, unless --fill gives the spin to use. When the
+    cell of the target is smaller (e.g. the source is a supercell of it),
+    only the configurations periodic with the target lattice are mapped.
+    If the two models are not described in the same frame (different
+    origin, orientation or choice of cell), the sites are matched by
+    aligning the structures with pymatgen's StructureMatcher.
+
+    With --model-out, map_configs also writes the source model rewritten in
+    the cell and order of sites of the target: its own positions (e.g. those
+    of a distorted phase) and couplings, with one site per site of the
+    target, so that the configurations of the target apply to it directly
+    (magnetic_model.equivalent_model; in visualbond, "Export transformed
+    model..." in the import window).
 
 
 *) print_equations

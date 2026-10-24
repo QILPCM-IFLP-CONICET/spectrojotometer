@@ -33,8 +33,13 @@ from tkinter import filedialog as fdlg
 from tkinter.scrolledtext import ScrolledText
 
 
-from spectrojotometer.magnetic_model import site_map
-from spectrojotometer.model_io import magnetic_model_from_file
+from spectrojotometer.magnetic_model import (
+    compatible_configurations,
+    equivalent_model,
+    map_configurations,
+    site_maps,
+)
+from spectrojotometer.model_io import magnetic_model_from_file, parse_spin_configurations
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +116,11 @@ class ImportConfigWindow(Toplevel):
             command=self.send_to_application,
         ).pack(side=LEFT)
         Button(framebts, text="Close", command=self.close_window).pack(side=RIGHT)
+        Button(
+            framebts,
+            text="Export transformed model...",
+            command=self.export_model,
+        ).pack(side=RIGHT)
         framebts.pack(side=BOTTOM, fill=X)
         self.grab_set()
         app.root.wait_window(self)
@@ -160,23 +170,92 @@ class ImportConfigWindow(Toplevel):
         size2 = len(model2.site_properties["coord_atomos"])
         self.energy_scale = float(size2) / float(size1)
         if self.energy_scale < 1.0:
-            messagebox.showinfo(
-                "Different sizes",
-                "#  alert: unit cell in model2 " + "is smaller than in model1.",
+            # Only the configurations periodic with the current cell can be
+            # imported; map_confs checks each one.
+            logger.info(
+                "The cell of the current model is smaller than the one of %s: "
+                "only its configurations periodic with the current cell can "
+                "be imported.",
+                self.selected_model.get(),
             )
         # For each site of the current model, the site of the other model at
-        # the same position (-1 if none: map_confs then uses spin 0).
-        dictatoms = site_map(model1, model2, tol)
+        # the same position: comparing positions or, if that does not find
+        # every site, aligning the structures (see site_map).
+        dictatoms, _, method = site_maps(model1, model2, tol)
         if -1 in dictatoms:
             logger.warning(
-                "Sites %s of the current model have no counterpart in %s; "
-                "they will get spin 0.",
+                "Sites %s of the current model have no counterpart in %s: "
+                "edit the site map, or increase the length tolerance.",
                 [i for i, j in enumerate(dictatoms) if j < 0],
                 self.selected_model.get(),
             )
+        elif method == "structure":
+            logger.info(
+                "The positions of %s do not match the current model directly "
+                "(different origin, orientation or cell); the site map comes "
+                "from aligning both structures with pymatgen's "
+                "StructureMatcher.",
+                self.selected_model.get(),
+            )
+        else:
+            logger.info("Site map of %s: %s", self.selected_model.get(), dictatoms)
         self.dictatoms = list(dictatoms)
         self.sitemap.delete(0, END)
         self.sitemap.insert(0, dictatoms.__str__()[1:-1])
+
+    def export_model(self):
+        """
+        Save, as a CIF file, the model of the configurations rewritten in
+        the cell and order of sites of the current model: its own
+        positions and couplings, with the sites of the current model (see
+        magnetic_model.equivalent_model).
+        """
+        if not self._ensure_model():
+            return
+        name = self.selected_model.get()
+        source, target = self.models[name], self.app.model
+        try:
+            tol = float(self.tol.get())
+            model = equivalent_model(source, target, tol)
+        except ValueError as error:
+            messagebox.showerror("Export transformed model", str(error))
+            return
+        automatic = site_maps(source, target, tol)[0]
+        shown = self.sitemap.get().replace(",", " ").split()
+        if shown and shown != [str(i) for i in automatic]:
+            logger.warning(
+                "The site map was edited by hand; the exported model follows "
+                "the automatic one: %s",
+                automatic,
+            )
+        filename = fdlg.asksaveasfilename(
+            initialdir=self.app.datafolder,
+            title="Save the transformed model",
+            defaultextension=".cif",
+            filetypes=(("cif files", "*.cif"), ("all files", "*.*")),
+        )
+        if not filename:
+            return
+        model.save_cif(filename)
+        logger.info(
+            "%s, in the cell and order of sites of the current model, saved "
+            "to %s (%d sites, couplings %s).",
+            name,
+            filename,
+            len(model.site_properties["coord_atomos"]),
+            list(model.bonds),
+        )
+
+    def _ensure_model(self):
+        """
+        Make sure the model of the configurations has been chosen: if not,
+        ask for it now (before, loading configurations or importing
+        without choosing it first failed). Returns whether there is one.
+        """
+        if self.selected_model.get() not in self.models:
+            # Triggers onmodelselect, which asks for the file.
+            self.selected_model.set("[other model]")
+        return self.selected_model.get() in self.models
 
     def close_window(self):
         """close the window"""
@@ -198,8 +277,8 @@ class ImportConfigWindow(Toplevel):
         Read configs from a model
         """
         logger.debug("configs from file")
-        if self.selected_model.get() == "[other model]":
-            self.onmodelselect()
+        if not self._ensure_model():
+            return
         filename = fdlg.askopenfilename(
             initialdir=self.app.datafolder + "/",
             title="Select file",
@@ -214,39 +293,68 @@ class ImportConfigWindow(Toplevel):
         logger.info("Configurations read from %s", filename)
 
     def map_confs(self):
-        """Map configurations from a model to another model"""
-        self.dictatoms = [int(x) for x in self.sitemap.get().split(", ")]
+        """
+        Map the configurations of the other model (inputs) to the current
+        one (outputs), with the site map shown (it can be edited).
+
+        Each site of the current model takes the spin of its site in the
+        other model, and the energies are scaled by the ratio of the
+        numbers of sites. Configurations that the current cell cannot
+        represent (not periodic with its lattice) are not imported: they
+        are kept as comments, with the reason.
+        """
+        if not self._ensure_model():
+            return
+        name = self.selected_model.get()
+        source, target = self.models[name], self.app.model
+        try:
+            mapping = [int(x) for x in self.sitemap.get().replace(",", " ").split()]
+            tol = float(self.tol.get())
+            # Checks the site map once (sites without counterpart, size).
+            map_configurations(source, [], target, tol, mapping=mapping)
+        except ValueError as error:
+            messagebox.showerror(
+                "Import",
+                f"{error}.\n\nEdit the site map, or increase the length tolerance.",
+            )
+            return
+        num_sites = len(source.site_properties["coord_atomos"])
+        lines, skipped = [], 0
+        for line in self.inputconfs.get(1.0, END).split("\n"):
+            stripped = line.strip()
+            if stripped == "" or stripped.startswith("#"):
+                lines.append(line)
+                continue
+            try:
+                energies, confs, comments = parse_spin_configurations(stripped)
+            except ValueError:
+                lines.append("# not a configuration: " + stripped)
+                skipped += 1
+                continue
+            conf, comment = confs[0], comments[0].strip()
+            if len(conf) != num_sites:
+                lines.append(
+                    f"# skipped, {len(conf)} values for {num_sites} sites: {stripped}"
+                )
+                skipped += 1
+                continue
+            if not compatible_configurations(source, [conf], target, tol)[0]:
+                lines.append(
+                    "# skipped, not periodic with the current cell: " + stripped
+                )
+                skipped += 1
+                continue
+            (mapped,) = map_configurations(source, [conf], target, tol, mapping=mapping)
+            energy = energies[0] * self.energy_scale
+            lines.append(f"{energy}\t{mapped}\t# {comment}".rstrip())
+        if skipped:
+            logger.warning(
+                "%d configurations of %s were not imported (see the comments "
+                "in the imported list).",
+                skipped,
+                name,
+            )
         self.outputconfs.config(state=NORMAL)
-        lines = self.inputconfs.get(1.0, END).split("\n")
-        for line in lines:
-            linestrip = line.strip()
-            if linestrip == "" or linestrip[0] == "#":
-                self.outputconfs.insert(END, line + "\n")
-                continue
-
-            fields = line.strip().split(maxsplit=1)
-            if len(fields) == 1:
-                self.outputconfs.insert(END, "# " + line + "\n")
-                continue
-            fields = [
-                str(float(fields[0]) * self.energy_scale),
-                fields[1].strip().split(sep="# ", maxsplit=1),
-            ]
-            if len(fields[1]) == 1:
-                fields = [fields[0], fields[1][0], ""]
-            else:
-                fields = [fields[0], fields[1][0], fields[1][1]]
-
-            configtxt = fields[1]
-            config = []
-            for c_s in configtxt:
-                if c_s == "0":
-                    config.append(0)
-                if c_s == "1":
-                    config.append(1)
-            if len(config) < len(self.dictatoms):
-                config = config + (len(self.dictatoms) - len(config)) * [0]
-            config = [config[i] if i >= 0 else 0 for i in self.dictatoms]
-            newline = str(fields[0]) + "\t" + str(config) + "  #  " + fields[2] + "\n"
-            self.outputconfs.insert(END, newline)
+        self.outputconfs.delete(1.0, END)
+        self.outputconfs.insert(END, "\n".join(lines).strip("\n") + "\n")
         self.outputconfs.config(state=DISABLED)

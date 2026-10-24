@@ -3,6 +3,7 @@ Changes
 
 
 
+
 0.3.0 (unreleased)
 ------------------
 
@@ -31,6 +32,69 @@ Changes
 * ``ApplicationGUI`` no longer enters the Tk event loop from its
   constructor: call ``ApplicationGUI().run()``. The window can now be
   built and driven in tests (``tests/test_gui.py``).
+* WIEN2k ``.struct`` files:
+
+  * ``primitive_cell=True`` applies to them too (it was ignored, with a
+    warning): for centred lattices, the model has the primitive cell,
+    with one site for each set of sites related by the centring.
+    Checked against the CIF reader (a spinel) and against ASE (every
+    centring).
+
+  * Files numbering their atoms as ``ATOM   1:`` (positive index) could
+    not be read. The reader now follows the fixed-column format of
+    WIEN2k (also lattice parameters written without spaces between
+    them).
+  * Lengths are converted from bohr to angstrom (unless the file says
+    ``unit=ang``), like the models read from CIF files. Before, a
+    ``.struct`` model was in bohr: its distances, and the ranges given
+    to ``bond_generator``, were not comparable with a CIF model.
+  * Centred lattices (B, F, CXY, CYZ, CXZ): WIEN2k lists one of the
+    atoms related by the centring, and the others were missing. R
+    lattices are rejected with an explanation.
+  * The element of a site was its first two characters (``O1`` gave
+    ``O1``); it is now read from its name (``Cr1``, ``CR1``, ``O1``).
+  * The conversion from degrees used pi = 3.1415926.
+
+* Monte Carlo: Cancel did not stop a simulation (in visualbond's
+  Monte Carlo tab, or in any client): ``run_ising_mc`` ignored every
+  exception of the progress callback, including the one meant to stop
+  it. New ``monte_carlo.SimulationCancelled``: raised from the callback,
+  it stops the simulation. Two progress messages were still in Spanish.
+* Exporting the transformed model: ``magnetic_model.equivalent_model``
+  rewrites a model in the cell and order of sites of another one (e.g. a
+  distorted phase in the cell of the undistorted one), keeping its own
+  positions and couplings; each configuration of the target has, in it,
+  the coefficients of the corresponding configuration of the source. In
+  visualbond, "Export transformed model..." in the import window; in
+  ``map_configs``, ``--model-out``. ``save_cif`` quotes the name of the
+  model when it has spaces (the CIF was misread).
+* Importing configurations from another model (visualbond's import
+  window and ``map_configs``):
+
+  * From a larger cell (e.g. a supercell) onto a smaller one, a
+    configuration that is not periodic with the smaller cell was imported
+    as a different configuration, with its energy scaled: wrong data for
+    the fit, with no warning. New ``compatible_configurations``;
+    ``map_configurations`` rejects such configurations, and the import
+    window and ``map_configs`` keep them as comments, with the reason.
+  * The import window read the configuration from every ``0`` and ``1``
+    of the line, also those of a comment without a space after ``#``
+    (which was lost); it now uses the reader of the library
+    (``model_io.parse_spin_configurations``, new).
+  * A site without counterpart got spin 0 silently; it is now an error
+    that suggests editing the site map or the tolerance. The site map
+    can still be edited (``map_configurations(mapping=...)``).
+  * Pressing Import again duplicated the imported configurations.
+  * Loading the configurations before choosing their model in the menu
+    left the site map empty, and Import failed; the window now asks for
+    the model when needed.
+  * ``site_map`` (and ``map_configurations``, ``compatible_configurations``,
+    ``map_configs --method``) can align the structures with pymatgen's
+    ``StructureMatcher``, for models with a different origin, orientation
+    or choice of cell. By default (``method="auto"``) the positions are
+    compared, and the alignment is used only if that does not find every
+    site. ``site_maps`` gives both directions from a single alignment.
+
 * Monte Carlo simulation of the fitted model (``spectrojotometer.monte_carlo``,
   and the Monte Carlo tab of visualbond): Ising Metropolis, Wolff (with a
   gauge transformation for unfrustrated antiferromagnets) and parallel

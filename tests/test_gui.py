@@ -216,3 +216,173 @@ def test_entering_the_monte_carlo_tab_syncs_the_couplings(app, monkeypatch):
         bond["value"] = -2.0
     app._on_tab_changed()
     assert set(panel.editor.get_values().values()) == {0.75}
+
+
+def test_import_from_a_supercell(app, monkeypatch, tmp_path):
+    """Driven like a user: the model is chosen in the menu, and the buttons
+    are pressed. From a 2x1x1 supercell of the current model, periodic
+    configurations are imported with half their energy, the others are
+    kept as comments, and comments without a space after '#' survive."""
+    from spectrojotometer.gui import importconfig
+    from spectrojotometer.magnetic_model import MagneticModel
+    from spectrojotometer.model_io import magnetic_model_from_file
+
+    base = magnetic_model_from_file(str(EXAMPLES / "example1.cif"))
+    pos = np.array(base.site_properties["coord_atomos"], dtype=float)
+    lattice = np.array(base.lattice_properties["bravais_vectors"], dtype=float)
+    double = MagneticModel(
+        list(pos) + list(pos + lattice[0]),
+        [2 * lattice[0], lattice[1], lattice[2]],
+        magnetic_species=base.site_properties["magnetic_species"] * 2,
+    )
+    double.save_cif(str(tmp_path / "double.cif"))
+    (tmp_path / "double.spin").write_text(
+        "# supercell\n"
+        "10.0\t[0, 0, 0, 0, 0, 0]\t#first\n"
+        "20.0\t[1, 0, 0, 1, 0, 0]\t# second\n"
+        "30.0\t[0, 1, 0, 1, 1, 0]\t# not periodic\n"
+    )
+
+    load_example(app, monkeypatch)
+    files = iter([str(tmp_path / "double.cif"), str(tmp_path / "double.spin")])
+    monkeypatch.setattr(importconfig.fdlg, "askopenfilename", lambda **k: next(files))
+    monkeypatch.setattr(app.root, "wait_window", lambda *a: None)
+    window = importconfig.ImportConfigWindow(app)
+
+    def button(text):
+        stack = [window]
+        while stack:
+            widget = stack.pop()
+            stack.extend(widget.winfo_children())
+            if isinstance(widget, tkinter.Button) and widget.cget("text") == text:
+                return widget
+        raise LookupError(text)
+
+    try:
+        window.optmodels["menu"].invoke(0)  # "[other model]"
+        assert window.sitemap.get() == "0, 1, 2"
+        assert window.energy_scale == 0.5
+        button("Load Configuration from File").invoke()
+        button("Import").invoke()
+        button("Import").invoke()  # importing again must not duplicate
+        out = window.outputconfs.get("1.0", tkinter.END)
+        assert out.count("5.0\t[0, 0, 0]\t# first") == 1
+        assert out.count("10.0\t[1, 0, 0]\t# second") == 1
+        assert "# skipped, not periodic with the current cell: 30.0" in out
+        assert "15.0" not in out  # the non-periodic one was not imported
+        button("Send to main application").invoke()
+        sent = app.spinconfigs.get("1.0", tkinter.END)
+        assert "5.0\t[0, 0, 0]" in sent and "15.0" not in sent
+    finally:
+        window.close_window()
+
+
+def test_import_reports_sites_without_counterpart(app, monkeypatch):
+    from spectrojotometer.gui import importconfig
+
+    load_example(app, monkeypatch)
+    files = iter([str(EXAMPLES / "example1.cif")])
+    monkeypatch.setattr(importconfig.fdlg, "askopenfilename", lambda **k: next(files))
+    monkeypatch.setattr(app.root, "wait_window", lambda *a: None)
+    errors = []
+    monkeypatch.setattr(importconfig.messagebox, "showerror", lambda *a: errors.append(a))
+    window = importconfig.ImportConfigWindow(app)
+    try:
+        window.optmodels["menu"].invoke(0)
+        window.sitemap.delete(0, tkinter.END)
+        window.sitemap.insert(0, "0, -1, 2")  # a site without counterpart
+        window.inputconfs.insert("1.0", "1.0 [0, 1, 0]\n")
+        window.map_confs()
+        assert errors and "no counterpart" in errors[-1][1]
+    finally:
+        window.close_window()
+
+
+def drive_import(app, monkeypatch, other_model, spin_text, tmp_path, choose_first):
+    """Open the import window, load the configurations (choosing the model
+    in the menu first, or not) and import them. Returns the window."""
+    from spectrojotometer.gui import importconfig
+
+    spin = tmp_path / "configs.spin"
+    spin.write_text(spin_text)
+    answers = {"Select file to open": str(other_model), "Select file": str(spin)}
+    monkeypatch.setattr(importconfig.fdlg, "askopenfilename", lambda **k: answers[k["title"]])
+    monkeypatch.setattr(app.root, "wait_window", lambda *a: None)
+    window = importconfig.ImportConfigWindow(app)
+    if choose_first:
+        window.optmodels["menu"].invoke(0)
+    window.configs_from_file()
+    window.map_confs()
+    return window
+
+
+def test_import_without_choosing_the_model_first(app, monkeypatch, tmp_path):
+    """Loading the configurations before choosing the model asks for it
+    (it used to fail on Import, with an empty site map)."""
+    load_example(app, monkeypatch)
+    window = drive_import(
+        app, monkeypatch, EXAMPLES / "example1.cif",
+        (EXAMPLES / "example1.spin").read_text(), tmp_path, choose_first=False,
+    )
+    try:
+        assert window.sitemap.get() == "0, 1, 2"
+        assert "49022.0027\t[0, 0, 0]" in window.outputconfs.get("1.0", tkinter.END)
+    finally:
+        window.close_window()
+
+
+def test_import_from_a_model_in_another_frame(app, monkeypatch, tmp_path):
+    """The other model has a different origin: the site map comes from the
+    alignment of the structures, and the configurations are imported."""
+    from spectrojotometer.magnetic_model import MagneticModel
+    from spectrojotometer.model_io import magnetic_model_from_file
+
+    base = magnetic_model_from_file(str(EXAMPLES / "example1.cif"))
+    lattice = np.array(base.lattice_properties["bravais_vectors"], dtype=float)
+    shift = np.array([0.11, 0.23, 0.07]) @ lattice
+    MagneticModel(
+        list(np.array(base.site_properties["coord_atomos"], dtype=float) + shift),
+        list(lattice),
+        magnetic_species=list(base.site_properties["magnetic_species"]),
+    ).save_cif(str(tmp_path / "shifted.cif"))
+    load_example(app, monkeypatch)
+    window = drive_import(
+        app, monkeypatch, tmp_path / "shifted.cif",
+        "1.0 [0, 1, 0] # a\n2.0 [1, 1, 0] # b\n", tmp_path, choose_first=True,
+    )
+    try:
+        mapping = [int(x) for x in window.sitemap.get().split(",")]
+        assert sorted(mapping) == [0, 1, 2]
+        out = window.outputconfs.get("1.0", tkinter.END)
+        assert "1.0\t" in out and "2.0\t" in out and "skipped" not in out
+    finally:
+        window.close_window()
+
+
+def test_export_transformed_model(app, monkeypatch, tmp_path):
+    """The button saves the other model in the cell and order of sites of
+    the current one, and the file can be read back."""
+    from spectrojotometer.gui import importconfig
+    from spectrojotometer.model_io import magnetic_model_from_file
+
+    load_example(app, monkeypatch)
+    out = tmp_path / "transformed.cif"
+    monkeypatch.setattr(
+        importconfig.fdlg, "askopenfilename", lambda **k: str(EXAMPLES / "example1.cif")
+    )
+    monkeypatch.setattr(importconfig.fdlg, "asksaveasfilename", lambda **k: str(out))
+    monkeypatch.setattr(app.root, "wait_window", lambda *a: None)
+    window = importconfig.ImportConfigWindow(app)
+    try:
+        window.export_model()  # asks for the model first
+        exported = magnetic_model_from_file(str(out))
+        assert len(exported.site_properties["coord_atomos"]) == len(
+            app.model.site_properties["coord_atomos"]
+        )
+        assert list(exported.bonds) == list(app.model.bonds)
+        for conf in ([0, 0, 0], [0, 1, 0], [0, 1, 1]):
+            np.testing.assert_array_equal(
+                exported.coefficient_matrix([conf]), app.model.coefficient_matrix([conf])
+            )
+    finally:
+        window.close_window()

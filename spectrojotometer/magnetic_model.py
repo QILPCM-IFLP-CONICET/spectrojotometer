@@ -13,6 +13,7 @@ from .tools import (
     format_symmetry_operator,
     offset_orientation,
     pack_offset,
+    unpack_offset,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,15 +108,8 @@ def build_supercell(supercell_size, atomic_positions, bravais_vectors):
 
 
 
-def site_map(source, target, tol=0.1):
-    """
-    For each site of the target model, the index of the site of the source
-    model at the same position, up to a translation of the source lattice;
-    -1 if there is none within tol.
-
-    source, target: MagneticModel instances, with positions in the same
-    frame (Cartesian coordinates).
-    """
+def _position_site_map(source, target, tol):
+    """site_map by comparing positions: both models in the same frame."""
     src_pos = np.asarray(source.site_properties["coord_atomos"], dtype=float)
     tgt_pos = np.asarray(target.site_properties["coord_atomos"], dtype=float)
     bravais = np.asarray(source.lattice_properties["bravais_vectors"], dtype=float)
@@ -136,35 +130,351 @@ def site_map(source, target, tol=0.1):
     return result
 
 
-def map_configurations(source, confs, target, tol=0.1, fill=None):
+def _to_pymatgen_structure(model):
+    from pymatgen.core import Lattice, Structure
+
+    return Structure(
+        Lattice(np.asarray(model.lattice_properties["bravais_vectors"], dtype=float)),
+        list(model.site_properties["magnetic_species"]),
+        np.asarray(model.site_properties["coord_atomos"], dtype=float),
+        coords_are_cartesian=True,
+    )
+
+
+def _structure_alignment(source, target):
+    """
+    A single alignment of the two structures by pymatgen's
+    StructureMatcher, which allows a different origin, orientation or
+    choice of cell (and a supercell of either model). Returns None if they
+    do not match, or a dict with:
+
+    forward: for each target site, a source site at the same position;
+    reverse: for each source site, a target site at the same position;
+    supercell, translation, mapping, swapped: the transformation found.
+        If not swapped (the target has at least as many sites), the source
+        structure, made into a supercell (supercell) and translated
+        (translation, fractional), has its site mapping[t] at target site
+        t. If swapped, the roles are exchanged.
+    """
+    from pymatgen.analysis.structure_matcher import StructureMatcher
+
+    s_src, s_tgt = _to_pymatgen_structure(source), _to_pymatgen_structure(target)
+    n_src, n_tgt = len(s_src), len(s_tgt)
+    matcher = StructureMatcher(primitive_cell=False, scale=True, attempt_supercell=True)
+    swapped = n_tgt < n_src
+    # The matcher enlarges the second structure into a supercell of the
+    # first one; the images of each site are consecutive in that supercell.
+    try:
+        if swapped:
+            found = matcher.get_transformation(s_src, s_tgt)
+        else:
+            found = matcher.get_transformation(s_tgt, s_src)
+    except ValueError:
+        found = None
+    if found is None:
+        return None
+    supercell, translation, mapping = found
+    images = int(round(abs(np.linalg.det(supercell))))
+    if not swapped:
+        forward = [-1 if m is None else int(m) // images for m in mapping[:n_tgt]]
+        reverse = [-1] * n_src
+        for t, s in enumerate(forward):
+            if s >= 0 and reverse[s] < 0:
+                reverse[s] = t
+    else:
+        reverse = [-1 if m is None else int(m) // images for m in mapping[:n_src]]
+        forward = [-1] * n_tgt
+        for s, t in enumerate(reverse):
+            if t >= 0 and forward[t] < 0:
+                forward[t] = s
+    return {
+        "forward": forward,
+        "reverse": reverse,
+        "supercell": np.asarray(supercell),
+        "translation": np.asarray(translation, dtype=float),
+        "mapping": list(mapping),
+        "swapped": swapped,
+    }
+
+
+def _structure_site_maps(source, target):
+    """(forward, reverse) from _structure_alignment (all -1 if no match)."""
+    alignment = _structure_alignment(source, target)
+    if alignment is None:
+        return (
+            [-1] * len(target.site_properties["coord_atomos"]),
+            [-1] * len(source.site_properties["coord_atomos"]),
+        )
+    return alignment["forward"], alignment["reverse"]
+
+
+def site_maps(source, target, tol=0.1, method="auto"):
+    """
+    (forward, reverse, method_used), from a single alignment:
+    forward[t] is the source site of each target site (as site_map),
+    reverse[s] a target site of each source site, and method_used the
+    method actually used ("position" or "structure"; see site_map).
+    """
+    if method not in ("auto", "position", "structure"):
+        raise ValueError(f"unknown method {method!r}")
+    if method in ("auto", "position"):
+        forward = _position_site_map(source, target, tol)
+        if method == "position" or min(forward, default=0) >= 0:
+            return forward, _position_site_map(target, source, tol), "position"
+    matched, reverse = _structure_site_maps(source, target)
+    if method == "auto" and min(matched, default=0) < 0:
+        # No complete match either: the partial map by positions tells
+        # which sites are missing.
+        return forward, _position_site_map(target, source, tol), "position"
+    return matched, reverse, "structure"
+
+
+def site_map(source, target, tol=0.1, method="auto"):
+    """
+    For each site of the target model, the index of the site of the source
+    model at the same position, up to a translation of the source lattice;
+    -1 if there is none.
+
+    method:
+        "position": compare the positions (Cartesian coordinates), within
+            tol: both models must be described in the same frame (same
+            origin and orientation of the axes).
+        "structure": align the two structures with pymatgen's
+            StructureMatcher, which allows a different origin,
+            orientation or choice of cell. Among alignments related by a
+            symmetry of the structures, any one may be chosen.
+        "auto" (default): "position" if it finds every site, otherwise
+            "structure" if it does; else the partial map by positions.
+    """
+    return site_maps(source, target, tol, method)[0]
+
+
+def compatible_configurations(source, confs, target, tol=0.1, method="auto"):
+    """
+    For each configuration of the source model, whether the target model
+    can represent it: whether the configuration is periodic with the
+    lattice of the target.
+
+    When the cell of the target is a supercell of the source one, every
+    configuration is. When the target cell is smaller (e.g. the source is
+    a supercell of it), only the configurations that repeat with the
+    lattice of the target are: in the others, two source sites that are
+    the same site of the target have different spins, and no
+    configuration of the target describes them (its energy, scaled by the
+    ratio of cell sizes, would be the energy of a different
+    configuration).
+
+    Sites of the source without counterpart in the target are not checked.
+    method: as in site_map.
+    """
+    # For each target site, its source site; and, for each source site, a
+    # target site at the same position (modulo the target lattice). Both
+    # from the same alignment.
+    forward, reverse, _ = site_maps(source, target, tol, method)
+    result = []
+    for conf in confs:
+        ok = True
+        for src, tgt in enumerate(reverse):
+            if tgt < 0 or forward[tgt] < 0:
+                continue
+            if conf[src] != conf[forward[tgt]]:
+                ok = False
+                break
+        result.append(ok)
+    return result
+
+
+def map_configurations(
+    source, confs, target, tol=0.1, fill=None, mapping=None, method="auto"
+):
     """
     Translate spin configurations of the source model into configurations
     of the target model, using site_map: each site of the target takes the
     spin of the source site at the same position.
 
+    mapping: the site map to use, one index of a source site per site of
+    the target (by default, site_map(source, target, tol, method)).
+
     Raises ValueError if some site of the target has no counterpart in the
     source, unless fill (0 or 1) is given: then those sites take that
     value. Also if a configuration does not have one value per site of the
-    source model.
+    source model, or if the target cannot represent it (see
+    compatible_configurations).
     """
-    mapping = site_map(source, target, tol)
+    if mapping is None:
+        mapping = site_map(source, target, tol, method)
+    else:
+        mapping = [int(j) for j in mapping]
+    num_sites = len(source.site_properties["coord_atomos"])
+    num_target = len(target.site_properties["coord_atomos"])
+    if len(mapping) != num_target:
+        raise ValueError(
+            f"the site map has {len(mapping)} entries; the target model has "
+            f"{num_target} sites"
+        )
+    if any(j >= num_sites for j in mapping):
+        raise ValueError(
+            f"the site map refers to sites beyond the {num_sites} of the "
+            "source model"
+        )
     missing = [i for i, j in enumerate(mapping) if j < 0]
     if missing and fill is None:
         raise ValueError(
             f"sites {missing} of the target model have no counterpart in the "
             f"source model (tolerance {tol})"
         )
-    num_sites = len(source.site_properties["coord_atomos"])
-    result = []
-    for conf in confs:
+    for k, conf in enumerate(confs):
         if len(conf) != num_sites:
             raise ValueError(
                 f"configuration {conf} has {len(conf)} values; the source "
                 f"model has {num_sites} sites"
             )
-        result.append([conf[j] if j >= 0 else fill for j in mapping])
-    return result
+    incompatible = [
+        k
+        for k, ok in enumerate(
+            compatible_configurations(source, confs, target, tol, method)
+        )
+        if not ok
+    ]
+    if incompatible:
+        raise ValueError(
+            f"configurations {incompatible} are not periodic with the lattice "
+            "of the target model, which cannot represent them (see "
+            "compatible_configurations)"
+        )
+    return [[conf[j] if j >= 0 else fill for j in mapping] for conf in confs]
 
+
+def _cif_value(text):
+    """A CIF value: quoted if it has spaces (otherwise it is misread)."""
+    text = str(text)
+    if text and not any(c.isspace() for c in text):
+        return text
+    return "'" + text.replace("'", "") + "'"
+
+
+def _bond_offset(tag):
+    """The lattice offset of a bond, from its tag (see pack_offset)."""
+    if tag is None or (isinstance(tag, str) and tag in (".", "")):
+        return np.zeros(3, dtype=int)
+    if isinstance(tag, str):
+        return np.asarray(unpack_offset(tag), dtype=int)
+    return np.asarray(tag, dtype=int)
+
+
+def equivalent_model(source, target, tol=0.1, method="auto"):
+    """
+    The source model rewritten in the cell and the order of sites of the
+    target model: a MagneticModel with one site per site of the target, in
+    the same order (so the configurations of the target apply to it
+    directly), with the positions, lattice, species and couplings of the
+    source (its distortions and couplings, which need not be those of the
+    target).
+
+    The sites are matched as in site_maps (same method). The cell of the
+    result is the source cell made into the supercell that corresponds to
+    the target cell (the identity if both cells are the same), so the
+    target cell must not be smaller than the source one. The positions
+    are wrapped into the cell, and each bond of the source is replicated
+    at every image of its first site, pointing to the site and cell of
+    the result where its partner lies.
+    """
+    forward, _, used = site_maps(source, target, tol, method)
+    missing = [t for t, s in enumerate(forward) if s < 0]
+    if missing:
+        raise ValueError(
+            f"sites {missing} of the target model have no counterpart in the "
+            "source model"
+        )
+    src_pos = np.asarray(source.site_properties["coord_atomos"], dtype=float)
+    src_lat = np.asarray(source.lattice_properties["bravais_vectors"], dtype=float)
+    n_src = len(src_pos)
+    n_tgt = len(forward)
+    if n_tgt < n_src:
+        raise ValueError(
+            f"the target cell ({n_tgt} sites) is smaller than the source one "
+            f"({n_src} sites): it cannot hold the source model"
+        )
+
+    if used == "position":
+        tgt_pos = np.asarray(target.site_properties["coord_atomos"], dtype=float)
+        tgt_lat = np.asarray(target.lattice_properties["bravais_vectors"], dtype=float)
+        ratio = tgt_lat @ np.linalg.inv(src_lat)
+        supercell = np.round(ratio)
+        if not np.allclose(ratio, supercell, atol=0.05) or round(
+            abs(np.linalg.det(supercell))
+        ) != n_tgt // n_src or n_tgt % n_src:
+            raise ValueError(
+                "the target cell is not a supercell of the source cell: "
+                f"target lattice = {np.round(ratio, 3).tolist()} x source lattice"
+            )
+        lattice = supercell @ src_lat
+        positions = []
+        for t, s in enumerate(forward):
+            # The image of the source site closest to the target site.
+            shift = np.round(np.linalg.solve(src_lat.T, tgt_pos[t] - src_pos[s]))
+            positions.append(src_pos[s] + shift @ src_lat)
+        positions = np.array(positions)
+    else:
+        alignment = _structure_alignment(source, target)
+        enlarged = _to_pymatgen_structure(source)
+        enlarged.make_supercell(alignment["supercell"])
+        enlarged.translate_sites(
+            list(range(len(enlarged))), alignment["translation"], frac_coords=True
+        )
+        lattice = enlarged.lattice.matrix
+        positions = np.array(
+            [enlarged[alignment["mapping"][t]].coords for t in range(n_tgt)]
+        )
+
+    # Wrap the positions into the cell (a CIF reader would wrap them).
+    frac = np.linalg.solve(lattice.T, positions.T).T
+    frac = frac - np.floor(frac + 1e-9)
+    positions = frac @ lattice
+
+    def locate(point):
+        """(site, cell offset) of the result at point."""
+        best = None
+        for u, site in enumerate(positions):
+            coeffs = np.linalg.solve(lattice.T, point - site)
+            cell = np.round(coeffs)
+            dist = np.linalg.norm((coeffs - cell) @ lattice)
+            if best is None or dist < best[2]:
+                best = (u, cell.astype(int), dist)
+        if best[2] > tol:
+            raise ValueError(f"no site of the result at {point} (bond partner)")
+        return best[0], best[1]
+
+    images = {}
+    for t, s in enumerate(forward):
+        images.setdefault(s, []).append(t)
+    names, distances, bond_lists = [], [], []
+    for name, info in source.bonds.items():
+        bonds = []
+        for i, j, tag in info["bonds"]:
+            displacement = src_pos[j] + _bond_offset(tag) @ src_lat - src_pos[i]
+            for t in images.get(i, []):
+                u, cell = locate(positions[t] + displacement)
+                bonds.append((t, u, "." if not cell.any() else pack_offset(cell)))
+        names.append(name)
+        distances.append(info["distance"])
+        bond_lists.append(bonds)
+
+    def per_site(key):
+        values = source.site_properties[key]
+        return [values[s] for s in forward]
+
+    return MagneticModel(
+        list(positions),
+        list(lattice),
+        bond_lists=bond_lists,
+        bond_names=names,
+        bond_distances=distances,
+        magnetic_species=per_site("magnetic_species"),
+        g_lande_factors=per_site("g_lande_factors"),
+        spin_repr=per_site("spin_repr"),
+        model_label=f"{source.model_label} in the cell of {target.model_label}",
+    )
 
 def _clamp_supercell_size(supercell_size):
     """An int, or one value per axis; each clamped to 1..4."""
@@ -1178,7 +1488,7 @@ class MagneticModel:
 {model_name}
 
 _chemical_name_common                  """
-                + self.model_label
+                + _cif_value(self.model_label)
                 + "\n"
             )
             fileout.write(head)

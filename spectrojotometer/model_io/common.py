@@ -219,7 +219,4 @@ def read_spin_configurations_file(filename: str, model: MagneticModel) -> tuple:
         file order and aligned with the other two lists.
     """
     with open(filename, "r") as stream:
-        # The number of sites (model.cell_size is not set).
-        return parse_spin_configurations(
-            stream.read(), model.lattice_properties["cell_size"]
-        )
+        return parse_spin_configurations(stream.read(), model.num_sites)

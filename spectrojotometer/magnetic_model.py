@@ -542,9 +542,7 @@ class MagneticModel:
     MagneticModel represents a set of magnetic atoms
     bound by pairwise Heisenberg-like interactions.
     """
-    cell_size:int
     model_label:str
-    onfly:bool
     site_properties: dict
     lattice_properties:dict
     bonds: dict
@@ -560,7 +558,7 @@ class MagneticModel:
         supercell_size=1,
         discretization=None,
         magnetic_species=None,
-        onfly: bool = True,
+        onfly=None,
         model_label="default",
         g_lande_factors: list | None = None,
         spin_repr: list | None = None,
@@ -583,6 +581,7 @@ class MagneticModel:
         symmetries, space_group_symbol : how the model was built, kept for
             save_cif and for information.
         ranges, discretization : deprecated, ignored. Use generate_bonds.
+        onfly : deprecated, ignored (it was never used).
         """
         if ranges is not None or discretization is not None:
             warnings.warn(
@@ -592,9 +591,13 @@ class MagneticModel:
                 DeprecationWarning,
                 stacklevel=2,
             )
+        if onfly is not None:
+            warnings.warn(
+                "The onfly argument of MagneticModel has no effect.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self.model_label = model_label
-        self.onfly = onfly
-        self.cell_size = 0
         num_sites = len(atomic_pos)
         logger.debug("atomic positions: %s", atomic_pos)
 
@@ -620,6 +623,33 @@ class MagneticModel:
             "space_group_symbol": space_group_symbol,
         }
         self.bonds = _bonds_dict(bond_lists, bond_names, bond_distances)
+
+    @property
+    def num_sites(self) -> int:
+        """The number of magnetic sites of the cell (the length of a
+        configuration)."""
+        return self.lattice_properties["cell_size"]
+
+    @property
+    def cell_size(self) -> int:
+        """Deprecated: use num_sites. (It was always 0.)"""
+        warnings.warn(
+            "MagneticModel.cell_size is deprecated (it was always 0); "
+            "use MagneticModel.num_sites.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.num_sites
+
+    @property
+    def onfly(self) -> bool:
+        """Deprecated, without effect."""
+        warnings.warn(
+            "MagneticModel.onfly is deprecated and has no effect.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return True
 
     def remove_bond_by_name(self, name):
         """

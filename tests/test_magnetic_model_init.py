@@ -114,3 +114,30 @@ def test_remove_bond_by_name():
     with pytest.warns(DeprecationWarning, match="remove_bond_by_name"):
         m.remover_bond_by_name("J1")
     assert m.bonds == {}
+
+
+def test_num_sites():
+    assert model().num_sites == 3 == len(model().site_properties["coord_atomos"])
+
+
+def test_cell_size_is_deprecated_and_no_longer_zero():
+    """cell_size was always 0; it is the number of sites, with a warning."""
+    m = model()
+    with pytest.warns(DeprecationWarning, match="num_sites"):
+        assert m.cell_size == 3
+
+
+def test_onfly_is_deprecated():
+    """It was stored and never used."""
+    with pytest.warns(DeprecationWarning, match="onfly"):
+        model(onfly=False)
+    with pytest.warns(DeprecationWarning, match="onfly"):
+        assert model().onfly is True
+
+
+def test_the_constructor_does_not_warn_by_default():
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        model()

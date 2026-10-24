@@ -217,6 +217,12 @@ Changes
   are deprecated (use ``generate_bonds``). The constructor was split
   into small helpers (complexity 26 -> 5), with tests that fix its
   behaviour.
+* ``MagneticModel.num_sites``: the number of magnetic sites (the length
+  of a configuration). ``MagneticModel.cell_size``, which was always 0
+  (the number of sites is ``lattice_properties["cell_size"]``), is
+  deprecated: it returns the number of sites, with a
+  ``DeprecationWarning``. The ``onfly`` argument and attribute, never
+  used, are deprecated too.
 
 * **Fixed** ``import spectrojotometer.model_io`` failing with
   ``AttributeError: module 'importlib' has no attribute 'util'`` in a

@@ -7,6 +7,10 @@ pip install -e ".[test]"
 pytest
 ```
 
+The tests marked `slow` (long Monte Carlo simulations, validated against
+known critical temperatures) are skipped by default; run them with
+`pytest --run-slow`. The CI always does.
+
 The tests of the graphical interface (`test_gui.py`, and one test in
 `test_logging.py`) need a display: without one they are skipped. On a
 headless machine, run them with `xvfb-run pytest`, as the CI does.

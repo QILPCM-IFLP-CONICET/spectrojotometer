@@ -105,10 +105,31 @@ def assert_models_equivalent(model_a, model_b, atol: float = 1e-3) -> None:
 
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-slow",
+        action="store_true",
+        default=False,
+        help="also run the tests marked slow (long Monte Carlo simulations); "
+        "the CI does",
+    )
+
+
 def pytest_configure(config):
     config.addinivalue_line(
-        "markers", "slow: tests that takes more than a few seconds."
+        "markers",
+        "slow: tests that take more than a few seconds; skipped unless "
+        "pytest is run with --run-slow.",
     )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-slow"):
+        return
+    skip = pytest.mark.skip(reason="slow test: run pytest with --run-slow")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip)
 
 
 @pytest.fixture(scope="session", autouse=True)

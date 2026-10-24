@@ -32,6 +32,9 @@ Changes
 * ``ApplicationGUI`` no longer enters the Tk event loop from its
   constructor: call ``ApplicationGUI().run()``. The window can now be
   built and driven in tests (``tests/test_gui.py``).
+* Tests: the long Monte Carlo tests (marked ``slow``) are skipped by
+  default; ``pytest --run-slow`` runs them, and the CI always does. The
+  suite takes about half the time.
 * WIEN2k ``.struct`` files:
 
   * ``primitive_cell=True`` applies to them too (it was ignored, with a

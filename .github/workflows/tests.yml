@@ -44,8 +44,9 @@ jobs:
       - name: Check for syntax errors and undefined names
         run: ruff check --select E9,F63,F7,F82 .
 
+      # --run-slow: also the long Monte Carlo tests, skipped by default.
       - name: Run the tests
-        run: xvfb-run -a python -m pytest -ra
+        run: xvfb-run -a python -m pytest -ra --run-slow
   # Build the distributions and use them as a user would: installed in a
   # clean environment, not in editable mode, outside the repository.
   package:

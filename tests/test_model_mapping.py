@@ -74,7 +74,7 @@ def test_parse_spin_configurations_comments():
     text = "# header\n1.5\t[0, 1, 0]\t# a\nNAN [0, 1, 1] #10\n2.5 [1, 0, 0]#7\n\n"
     energies, confs, comments = parse_spin_configurations(text)
     assert confs == [[0, 1, 0], [0, 1, 1], [1, 0, 0]]
-    assert comments == [" a", "10", "7"]
+    assert comments == ["a", "10", "7"]
     assert energies[0] == 1.5 and np.isnan(energies[1])
 
 

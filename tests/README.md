@@ -70,6 +70,9 @@ The model (`spectrojotometer/magnetic_model.py`):
   search on a small model, and the 5% rule for the number of
   configurations).
 - `test_model_mapping.py` — `site_map` and `map_configurations`.
+- `test_spin_configurations.py` — reading spin configurations: the errors
+  and their line numbers, padding, comments; the file reader, visualbond's
+  main window and the output of `optimize-configurations`.
 
 The Monte Carlo simulation (`spectrojotometer/monte_carlo/`):
 

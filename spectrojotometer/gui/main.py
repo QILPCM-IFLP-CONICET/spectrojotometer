@@ -58,7 +58,12 @@ import numpy as np
 # from importlib.resources import path as resource_filename
 from spectrojotometer import __path__ as spectrojotometer_path
 from spectrojotometer import __version__ as spectrojotometerversion
-from spectrojotometer.model_io import confindex, magnetic_model_from_file
+from spectrojotometer.model_io import (
+    SpinConfigurationError,
+    confindex,
+    magnetic_model_from_file,
+    parse_spin_configurations,
+)
 
 from .dialogs import FindDialog
 from .importconfig import ImportConfigWindow
@@ -865,40 +870,16 @@ class ApplicationGUI:
                 spinconfigs = src_widget
             else:
                 spinconfigs = self.spinconfigs
-        confs = []
-        labels = []
-        energies = []
-
         conftxt = spinconfigs.get(1.0, END)
-        for linnum, line in enumerate(conftxt.split(sep="\n")):
-            ls = line.strip()
-            if ls == "" or ls[0] == "#":
-                continue
-            fields = ls.split(maxsplit=1)
-            try:
-                energy = float(fields[0])
-                ls = fields[1]
-            except ValueError:
-                self.print_status("Error at line " + str(linnum + 1))
-                return
-            newconf = []
-            comment = ""
-            for pos, c in enumerate(ls):
-                if c == "#":
-                    comment = ls[(pos + 1) :]
-                    break
-                elif c == "0":
-                    newconf.append(0)
-                elif c == "1":
-                    newconf.append(1)
-            cell_size = self.model.lattice_properties["cell_size"]
-            while len(newconf) < cell_size:
-                newconf.append(0)
-            if comment == "":
-                comment = str(confindex(newconf))
-            labels.append(comment)
-            confs.append(newconf)
-            energies.append(energy)
+        try:
+            energies, confs, labels = parse_spin_configurations(
+                conftxt, self.model.lattice_properties["cell_size"]
+            )
+        except SpinConfigurationError as err:
+            self.print_status(f"Error at line {err.line}: {err.reason}", logging.WARNING)
+            return
+        # Configurations without a comment are labelled by their index.
+        labels = [label or str(confindex(conf)) for label, conf in zip(labels, confs)]
         self.configurations = (energies, confs, labels)
         # with open(self.tmpconfig.name, "w") as f:
         #    for idx, nc in enumerate(confs):

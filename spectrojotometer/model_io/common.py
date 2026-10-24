@@ -106,39 +106,75 @@ def confindex(c: list) -> int:
     return sum([i * 2**n for n, i in enumerate(c)])
 
 
+class SpinConfigurationError(ValueError):
+    """
+    A line of a spin-configuration text that cannot be read.
+
+    Attributes
+    ----------
+    line : int
+        The number of the line in the text (from 1, counting blank and
+        comment lines).
+    reason : str
+        What is wrong with it.
+    """
+
+    def __init__(self, line: int, reason: str):
+        super().__init__(f"line {line}: {reason}")
+        self.line = line
+        self.reason = reason
+
+
 def parse_spin_configurations(text: str, num_sites: int = 0) -> tuple:
     """
     Parse spin configurations from text, in the format of
     read_spin_configurations_file: one configuration per line,
-    `<energy> <config>[ #<comment>]`. Everything after the first `#` is
-    the comment (with or without a space after it); only the `0` and `1`
-    before it make the configuration. Blank lines and lines starting with
-    `#` are skipped. Configurations shorter than num_sites are
-    right-padded with `0`.
+    `<energy> <config>[ #<comment>]`, where `<energy>` is a number (or
+    `nan`, if it is not known). Everything after the first `#` is the
+    comment; only the `0` and `1` before it make the configuration.
+    Blank lines and lines starting with `#` are skipped.
+
+    num_sites: the number of sites of the model, if known (> 0):
+    shorter configurations are right-padded with `0`, and longer ones
+    are an error.
 
     Returns (energy_list, configuration_list, comments), as
-    read_spin_configurations_file.
+    read_spin_configurations_file; each comment without the spaces
+    around it, and `""` if there is none.
+
+    Raises SpinConfigurationError (a ValueError) for a line with an
+    invalid energy, without a configuration, or with more values than
+    num_sites; its `line` attribute is the number of the line.
     """
     configuration_list = []
     energy_list = []
     comments = []
-    for line in text.splitlines():
+    for lineno, line in enumerate(text.splitlines(), 1):
         ls = line.strip()
         if ls == "" or ls[0] == "#":
             continue
         fields = ls.split(maxsplit=1)
-        energy = float(fields[0])
+        try:
+            energy = float(fields[0])
+        except ValueError:
+            raise SpinConfigurationError(lineno, f"invalid energy {fields[0]!r}") from None
         ls = fields[1] if len(fields) > 1 else ""
         newconf = []
         comment = ""
         for pos, c in enumerate(ls):
             if c == "#":
-                comment = ls[(pos + 1) :]
+                comment = ls[(pos + 1) :].strip()
                 break
             if c == "0":
                 newconf.append(0)
             elif c == "1":
                 newconf.append(1)
+        if not newconf:
+            raise SpinConfigurationError(lineno, "expected '<energy> <config>'")
+        if num_sites > 0 and len(newconf) > num_sites:
+            raise SpinConfigurationError(
+                lineno, f"{len(newconf)} values for {num_sites} sites"
+            )
         while len(newconf) < num_sites:
             newconf.append(0)
         comments.append(comment)
@@ -158,8 +194,8 @@ def read_spin_configurations_file(filename: str, model: MagneticModel) -> tuple:
     site, in the order `model`'s sites are indexed (any character
     other than `0` or `1` before a `#` is ignored, which in practice
     allows separating groups of sites with spaces for readability).
-    Configurations shorter than `model.cell_size` are right-padded
-    with `0`. Blank lines and lines starting with `#` are skipped.
+    Configurations shorter than the number of sites of the model are
+    right-padded with `0`; longer ones are an error. Blank lines and lines starting with `#` are skipped.
     See parse_spin_configurations.
 
     Parameters
@@ -175,11 +211,15 @@ def read_spin_configurations_file(filename: str, model: MagneticModel) -> tuple:
         The energy declared for each configuration, in file order.
     configuration_list : list of list of int
         Each configuration as a list of 0/1 values (one per magnetic
-        site), padded to `model.cell_size`, in file order and aligned
+        site), padded to the number of sites, in file order and aligned
         with `energy_list`.
     comments : list of str
-        The text after `#` on each line (`""` if there was none), in
+        The text after `#` on each line, without the spaces around it
+        (`""` if there was none), in
         file order and aligned with the other two lists.
     """
     with open(filename, "r") as stream:
-        return parse_spin_configurations(stream.read(), model.cell_size)
+        # The number of sites (model.cell_size is not set).
+        return parse_spin_configurations(
+            stream.read(), model.lattice_properties["cell_size"]
+        )

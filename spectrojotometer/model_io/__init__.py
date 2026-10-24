@@ -57,6 +57,7 @@ from .cif import (
 )
 from .common import (
     DEFAULT_MAGNETIC_ATOMS,
+    SpinConfigurationError,
     confindex,
     read_bravais_vectors,
     parse_spin_configurations,
@@ -73,6 +74,7 @@ __all__ = [
     "cif_read_loop_bonds",
     "cif_read_loop_bonds_compact",
     "cif_read_loop_symmetries",
+    "SpinConfigurationError",
     "confindex",
     "expand_symmetries_with_centering",
     "find_atom_offset_by_symmetry",

@@ -105,7 +105,7 @@ def main():
     # Store the resume file
     with open(args["modelfile"][:-4] + "-resume.tmp", "w") as of:
         for idx, nc in enumerate(newconfs):
-            of.write("NAN\t" + str(nc) + "\t\t #" + newconflabels[idx] + "\n")
+            of.write("NAN\t" + str(nc) + "\t\t# " + newconflabels[idx] + "\n")
 
     #
     if args["out"] == "-":
@@ -116,12 +116,12 @@ def main():
         )
         print("# The optimal configurations found are\n")
         for idx, nc in enumerate(newconfs):
-            print("NAN\t", str(nc) + "\t\t #" + newconflabels[idx])
+            print("NAN\t", str(nc) + "\t\t# " + newconflabels[idx])
 
         if len(knownconfs) > 0:
             print("\n# Together with the known configurations\n")
             for idx, kc in enumerate(knownconfs):
-                print(knownenergies[idx], "\t", str(kc) + "\t\t #" + knowncomments[idx])
+                print(knownenergies[idx], "\t", str(kc) + "\t\t# " + knowncomments[idx])
 
     else:
         with open(args["out"], "w") as of:
@@ -131,7 +131,7 @@ def main():
                 + "\n\n"
             )
             for idx, nc in enumerate(newconfs):
-                of.write("NAN\t" + str(nc) + "\t\t #" + newconflabels[idx] + "\n")
+                of.write("NAN\t" + str(nc) + "\t\t# " + newconflabels[idx] + "\n")
             if len(knownconfs) > 0:
                 of.write("\n# Together with the known configurations\n\n")
                 for idx, kc in enumerate(knownconfs):
@@ -139,7 +139,7 @@ def main():
                         str(knownenergies[idx])
                         + "\t"
                         + str(kc)
-                        + "\t\t #"
+                        + "\t\t# "
                         + knowncomments[idx]
                         + "\n"
                     )

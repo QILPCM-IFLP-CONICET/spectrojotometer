@@ -35,6 +35,17 @@ Changes
 * Tests: the long Monte Carlo tests (marked ``slow``) are skipped by
   default; ``pytest --run-slow`` runs them, and the CI always does. The
   suite takes about half the time.
+* Spin configurations, one reader: ``parse_spin_configurations`` (also
+  used by visualbond's main window and by visualbondweb, which had their
+  own) raises ``SpinConfigurationError``, a ``ValueError`` with the
+  number of the line, for an invalid energy, a line without a
+  configuration (it became a configuration of zeros; in visualbond, an
+  ``IndexError``), or more values than ``num_sites`` (they were
+  accepted). Comments are returned without the spaces around them.
+  ``read_spin_configurations_file`` pads to the number of sites of the
+  model (it used ``model.cell_size``, always 0, so it did not pad), and
+  ``optimize-configurations`` writes ``# <label>`` for every
+  configuration.
 * WIEN2k ``.struct`` files:
 
   * ``primitive_cell=True`` applies to them too (it was ignored, with a

@@ -145,6 +145,16 @@ All three are invariant under a change of energy units: rescaling the
 energies and the tolerance by the same factor rescales the results by
 that factor.
 
+A configuration file has one configuration per line,
+``<energy> <config> # <label>``: the energy (``nan`` if it is not known),
+the ``0``\ s and ``1``\ s of the sites in the order of the model (other
+characters, such as brackets, commas or spaces, are ignored), and an
+optional label after ``#``. Lines starting with ``#`` are comments.
+Shorter configurations are padded with ``0``; a line with an invalid
+energy, without a configuration or with more values than sites raises
+``SpinConfigurationError`` (a ``ValueError``), with the number of the
+line.
+
 .. code:: python
 
    from spectrojotometer.model_io import (magnetic_model_from_file,

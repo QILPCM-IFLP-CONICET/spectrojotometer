@@ -70,6 +70,12 @@ The model (`spectrojotometer/magnetic_model.py`):
   search on a small model, and the 5% rule for the number of
   configurations).
 - `test_model_mapping.py` — `site_map` and `map_configurations`.
+- `test_aligned_model.py` — `equivalent_model(..., align=True)`: a distorted,
+  rotated and reordered copy of a spinel is moved onto the original, each
+  site at the image closest to its site; `generate_bonds` with a reference
+  gives the couplings of the original, in the same order (also through the
+  CIF, the command line, an edited site map, a supercell and a mirrored
+  cell); couplings missing or new in the model.
 - `test_generate_bonds.py` — `generate_bonds` finds every bond within the
   range, against a brute-force search: ranges longer than the cell, sites
   outside the cell, oblique cells, chains and rings, offsets that cannot be

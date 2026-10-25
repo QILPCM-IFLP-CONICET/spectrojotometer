@@ -49,6 +49,24 @@ If the input file has already information about bonds, the output file contains 
     )
 
     parser.add_argument(
+        "--reference",
+        metavar="modelfile",
+        type=str,
+        default=None,
+        help="a model with the same sites, in the same order and at nearby "
+        "positions (e.g. the target of map_configs --align --model-out): the "
+        "couplings are those generated for it, with the same names, bonds and "
+        "order, as long as the bond lengths stay within the discretization",
+    )
+
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="discard the bonds of the input file: the output has only the "
+        "generated ones",
+    )
+
+    parser.add_argument(
         "out", metavar="outfile", type=str, default=None, help="Name of the outputfile."
     )
 
@@ -75,9 +93,20 @@ If the input file has already information about bonds, the output file contains 
         args["rmax"] = 1.0
 
     model = magnetic_model_from_file(args["modelfile"])
-    model.generate_bonds(
-        ranges=[[args["rmin"], args["rmax"]]], discretization=args["discretization"]
-    )
+    if args["replace"]:
+        model.bonds = {}
+    reference = None
+    if args["reference"] is not None:
+        reference = magnetic_model_from_file(args["reference"])
+    try:
+        model.generate_bonds(
+            ranges=[[args["rmin"], args["rmax"]]],
+            discretization=args["discretization"],
+            reference=reference,
+        )
+    except ValueError as error:
+        eprint(f"bond_generator: {error}")
+        return 1
 
     for name, bond in model.bonds.items():
         print(f"{name}: distance {bond['distance']}, {len(bond['bonds'])} bonds")

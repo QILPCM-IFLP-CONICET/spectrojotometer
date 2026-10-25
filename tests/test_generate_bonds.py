@@ -111,3 +111,13 @@ def test_offsets_that_cannot_be_stored_are_an_error():
     model = MagneticModel([np.zeros(3)], [np.array([1.0, 0, 0]), np.array([0, 9.0, 0]), np.array([0, 0, 9.0])])
     with pytest.raises(ValueError, match="cell offset"):
         model.generate_bonds(0.02, [[0, 5.5]])
+
+
+def test_generating_twice_does_not_duplicate_bonds():
+    """The second call finds the same bonds, which the couplings already
+    have: they are not added again (they were, doubling the coefficients)."""
+    model = magnetic_model_from_file(str(EXAMPLES_DIR / "example1.cif"))
+    model.generate_bonds(0.02, [[0, 4]])
+    first = {name: list(c["bonds"]) for name, c in model.bonds.items()}
+    model.generate_bonds(0.02, [[0, 4]])
+    assert {name: c["bonds"] for name, c in model.bonds.items()} == first

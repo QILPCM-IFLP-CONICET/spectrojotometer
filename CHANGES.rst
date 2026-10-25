@@ -132,6 +132,29 @@ Changes
   farther than the tolerance are logged. visualbond's import window
   exports with the edited map (it used the automatic one, with a
   warning).
+  ``equivalent_model(..., align=True)`` (``map_configs --align``) moves
+  the result rigidly onto the target: rotated so that its Bravais vectors
+  point as those of the target (a reflection only for cells of opposite
+  handedness) and translated to fit its sites (least squares), each site
+  being the image closest to its site of the target, not wrapped into
+  the cell (with the structure alignment, the result was rotated and
+  translated with respect to the target, and its sites were images far
+  from those of the target). The result keeps the geometry of the target
+  as ``reference_model``.
+* ``generate_bonds(..., reference=...)`` (``bond_generator
+  --reference``): the couplings of a reference model with the same sites
+  (by default ``reference_model``, set by ``equivalent_model(...,
+  align=True)``): the same names, bonds and order, as long as the bond
+  lengths stay within the ranges and within the discretization of those
+  of the reference; a distortion no longer splits, merges or reorders the
+  couplings. What does not match is logged: lengths that differ more
+  (the bonds are kept), bonds of the reference out of the ranges (left
+  out; a coupling left empty is dropped, and the others keep their
+  names), bonds not in the reference (new couplings, after the others).
+  ``bond_generator --replace`` discards the bonds of the input file.
+* ``generate_bonds`` called again on a model with couplings added the
+  bonds a coupling already had once more (doubling their coefficients):
+  it adds only the new ones.
 * Importing configurations from another model (visualbond's import
   window and ``map_configs``):
 

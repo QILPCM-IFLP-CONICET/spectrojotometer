@@ -362,7 +362,7 @@ def _bond_offset(tag):
     return np.asarray(tag, dtype=int)
 
 
-def equivalent_model(source, target, tol=0.1, method="auto", mapping=None):
+def equivalent_model(source, target, tol=0.1, method="auto", mapping=None, align=False):
     """
     The source model rewritten in the cell and the order of sites of the
     target model: a MagneticModel with one site per site of the target, in
@@ -390,6 +390,21 @@ def equivalent_model(source, target, tol=0.1, method="auto", mapping=None):
     as the supercell holds it (once, for cells of the same size); a site
     that ends up farther than tol from where it was is logged as a
     warning. The automatic map is still needed, to place the sites.
+
+    align: if False (default), the result is in the frame of the source
+    (the alignment by StructureMatcher may leave it rotated and
+    translated with respect to the target) and its positions are wrapped
+    into the cell. If True, the result is moved rigidly onto the target:
+    rotated (an orthogonal transformation, a reflection only if the cells
+    have opposite handedness) so that its Bravais vectors are as close as
+    possible to those of the target, and translated so that its sites are
+    as close as possible to the sites of the target (least squares); and
+    each site is the image, among the lattice translations, closest to
+    its site of the target (not wrapped into the cell). The distances,
+    and so the couplings, are those of the source. The result then keeps
+    the geometry of the target in ``reference_model``, so that its
+    generate_bonds gives the couplings of the target, in the same order
+    (see MagneticModel.generate_bonds).
     """
     forward, _, used = site_maps(source, target, tol, method)
     missing = [t for t, s in enumerate(forward) if s < 0]
@@ -439,10 +454,34 @@ def equivalent_model(source, target, tol=0.1, method="auto", mapping=None):
             [enlarged[alignment["mapping"][t]].coords for t in range(n_tgt)]
         )
 
-    # Wrap the positions into the cell (a CIF reader would wrap them).
-    frac = np.linalg.solve(lattice.T, positions.T).T
-    frac = frac - np.floor(frac + 1e-9)
-    positions = frac @ lattice
+    tgt_pos = np.asarray(target.site_properties["coord_atomos"], dtype=float)
+    rotation = np.eye(3)
+    if align:
+        tgt_lat = np.asarray(target.lattice_properties["bravais_vectors"], dtype=float)
+        rotation, translation = _rigid_alignment(positions, lattice, tgt_pos, tgt_lat)
+        positions = positions @ rotation.T + translation
+        lattice = lattice @ rotation.T
+    else:
+        # Wrap the positions into the cell (a CIF reader would wrap them).
+        frac = np.linalg.solve(lattice.T, positions.T).T
+        frac = frac - np.floor(frac + 1e-9)
+        positions = frac @ lattice
+
+    site_of = list(forward)
+    species = [source.site_properties["magnetic_species"][s] for s in site_of]
+    g_factors = [source.site_properties["g_lande_factors"][s] for s in site_of]
+    spins = [source.site_properties["spin_repr"][s] for s in site_of]
+    if mapping is not None:
+        order = _edited_site_order(forward, mapping, positions, lattice, n_src, tol)
+        positions = positions[order]
+        site_of = [forward[u] for u in order]
+        species, g_factors, spins = (
+            [values[u] for u in order] for values in (species, g_factors, spins)
+        )
+    if align:
+        # Each site, the image closest to the site of the target it
+        # stands for.
+        positions = _closest_images(positions, lattice, tgt_pos)
 
     def locate(point):
         """(site, cell offset) of the result at point."""
@@ -458,13 +497,13 @@ def equivalent_model(source, target, tol=0.1, method="auto", mapping=None):
         return best[0], best[1]
 
     images = {}
-    for t, s in enumerate(forward):
+    for t, s in enumerate(site_of):
         images.setdefault(s, []).append(t)
     names, distances, bond_lists = [], [], []
     for name, info in source.bonds.items():
         bonds = []
         for i, j, tag in info["bonds"]:
-            displacement = src_pos[j] + _bond_offset(tag) @ src_lat - src_pos[i]
+            displacement = (src_pos[j] + _bond_offset(tag) @ src_lat - src_pos[i]) @ rotation.T
             for t in images.get(i, []):
                 u, cell = locate(positions[t] + displacement)
                 bonds.append((t, u, "." if not cell.any() else pack_offset(cell)))
@@ -472,25 +511,7 @@ def equivalent_model(source, target, tol=0.1, method="auto", mapping=None):
         distances.append(info["distance"])
         bond_lists.append(bonds)
 
-    def per_site(key):
-        values = source.site_properties[key]
-        return [values[s] for s in forward]
-
-    species = per_site("magnetic_species")
-    g_factors = per_site("g_lande_factors")
-    spins = per_site("spin_repr")
-    if mapping is not None:
-        order = _edited_site_order(forward, mapping, positions, lattice, n_src, tol)
-        inverse = {u: t for t, u in enumerate(order)}
-        positions = positions[order]
-        species, g_factors, spins = (
-            [values[u] for u in order] for values in (species, g_factors, spins)
-        )
-        bond_lists = [
-            [(inverse[a], inverse[b], tag) for a, b, tag in bonds] for bonds in bond_lists
-        ]
-
-    return MagneticModel(
+    result = MagneticModel(
         list(positions),
         list(lattice),
         bond_lists=bond_lists,
@@ -500,6 +521,84 @@ def equivalent_model(source, target, tol=0.1, method="auto", mapping=None):
         g_lande_factors=g_factors,
         spin_repr=spins,
         model_label=f"{source.model_label} in the cell of {target.model_label}",
+    )
+    if align:
+        result.reference_model = _geometry_copy(target)
+    return result
+
+
+def _rigid_alignment(positions, lattice, tgt_pos, tgt_lat):
+    """
+    (rotation, translation) of the isometry r -> rotation @ r + translation
+    that brings a model (positions, lattice) onto a target with the same
+    number of sites, site k standing for target site k: the orthogonal
+    rotation takes the Bravais vectors as close as possible to those of
+    the target (orthogonal Procrustes; it is a reflection only if the two
+    cells have opposite handedness), and the translation minimizes the
+    sum of the squared distances from each site, at its image closest to
+    its target site, to that target site. Without three Bravais vectors in
+    both models, the rotation is the identity.
+    """
+    rotation = np.eye(3)
+    if lattice.shape == (3, 3) and tgt_lat.shape == (3, 3):
+        u, _, vt = np.linalg.svd(tgt_lat.T @ lattice)
+        rotation = u @ vt
+        if np.linalg.det(rotation) < 0:
+            logger.info(
+                "The cells of the source and of the target have opposite "
+                "handedness: the source is reflected onto the target."
+            )
+    rotated = positions @ rotation.T
+    rot_lat = lattice @ rotation.T
+    # The translation is found by alternating the choice of images and the
+    # least-squares translation, starting from several sites as anchors:
+    # the first guess must already put each site near its image.
+    num = len(positions)
+    best = None
+    for anchor in sorted(set(np.linspace(0, num - 1, min(num, 16)).astype(int))):
+        translation = tgt_pos[anchor] - rotated[anchor]
+        for _ in range(50):
+            images = _closest_images(rotated + translation, rot_lat, tgt_pos)
+            step = np.mean(tgt_pos - images, axis=0)
+            translation = translation + step
+            if np.linalg.norm(step) < 1e-12:
+                break
+        images = _closest_images(rotated + translation, rot_lat, tgt_pos)
+        residual = np.sum((images - tgt_pos) ** 2)
+        if best is None or residual < best[0] - 1e-12:
+            best = (residual, translation)
+    return rotation, best[1]
+
+
+def _closest_images(positions, lattice, targets):
+    """
+    For each position, its image by a translation of the lattice closest
+    to the corresponding target point (exact also in oblique cells: the
+    lattice translations around the rounded fractional coordinates are
+    compared).
+    """
+    positions = np.asarray(positions, dtype=float)
+    targets = np.asarray(targets, dtype=float)
+    lattice = np.asarray(lattice, dtype=float).reshape(-1, 3)
+    if len(lattice) == 0 or len(positions) == 0:
+        return positions.copy()
+    dual = np.linalg.pinv(lattice)
+    base = np.round((targets - positions) @ dual)  # [k, axis]
+    steps = np.array(list(itertools.product((-1, 0, 1), repeat=len(lattice))))
+    cells = base[:, None, :] + steps[None, :, :]  # [k, step, axis]
+    candidates = positions[:, None, :] + cells @ lattice
+    dist = np.linalg.norm(candidates - targets[:, None, :], axis=-1)
+    return candidates[np.arange(len(positions)), np.argmin(dist, axis=1)]
+
+
+def _geometry_copy(model):
+    """A MagneticModel with the sites, species and lattice of model (copies),
+    without couplings: the reference for generate_bonds."""
+    return MagneticModel(
+        [np.array(p, dtype=float) for p in model.site_properties["coord_atomos"]],
+        [np.array(v, dtype=float) for v in model.lattice_properties["bravais_vectors"]],
+        magnetic_species=list(model.site_properties["magnetic_species"]),
+        model_label=model.model_label,
     )
 
 
@@ -645,6 +744,40 @@ def _ellipse_error_bounds(centered_coeffs):
     return np.where(determined, widths, np.inf)
 
 
+def _group_bonds(found, species, discretization):
+    """
+    The bonds found ({(i, j, tag): length}, see MagneticModel._bonds_within)
+    grouped by their length rounded to discretization and the species of
+    their sites: [(distance, [bonds])], sorted by (distance, species), each
+    list in the order of found.
+    """
+    groups = {}
+    for (i, j, tag), length in found.items():
+        key = (
+            round(length / discretization) * discretization,
+            tuple(sorted({species[i], species[j]})),
+        )
+        groups.setdefault(key, []).append((i, j, tag))
+    return [(key[0], groups[key]) for key in sorted(groups)]
+
+
+def _some(items, count=8):
+    """The first items of a list, for a log message."""
+    if len(items) <= count:
+        return str(items)
+    return str(items[:count])[:-1] + f", ... ({len(items) - count} more)]"
+
+
+def _extend_bond_names(bond_names, count):
+    """Append names J1, J2, ... not yet in bond_names, up to count names."""
+    index = 0
+    while len(bond_names) < count:
+        while "J" + str(index + 1) in bond_names:
+            index += 1
+        logger.debug("adding %s", "J" + str(index + 1))
+        bond_names.append("J" + str(index + 1))
+
+
 class MagneticModel:
     """
     MagneticModel represents a set of magnetic atoms
@@ -733,6 +866,9 @@ class MagneticModel:
             "space_group_symbol": space_group_symbol,
         }
         self.bonds = _bonds_dict(bond_lists, bond_names, bond_distances)
+        # A model with the same sites, in the same order, whose couplings
+        # generate_bonds reproduces (set by equivalent_model(align=True)).
+        self.reference_model = None
 
     @property
     def num_sites(self) -> int:
@@ -781,7 +917,7 @@ class MagneticModel:
         )
         return self.remove_bond_by_name(name)
 
-    def generate_bonds(self, discretization, ranges, bond_names=None):
+    def generate_bonds(self, discretization, ranges, bond_names=None, reference=None):
         """
         Add the bonds of the cell: every pair of magnetic sites, the second
         one in any cell, at a distance within one of the ranges (a list of
@@ -795,13 +931,65 @@ class MagneticModel:
         model does not limit them (it did: cells -1..1 by default, and
         bonds were missing). Raises ValueError if a bond needs a cell
         offset beyond -5..4, which cannot be stored.
-        """
-        atom_type = self.site_properties["magnetic_species"]
-        atomic_positions = self.site_properties["coord_atomos"]
-        bonds = self.bonds
 
+        reference: a MagneticModel with the same sites, in the same order
+        and at nearby positions (for instance, the target of
+        equivalent_model with align=True), or None (default) to use
+        self.reference_model, which equivalent_model(align=True) sets.
+        With a reference, the couplings are the ones generate_bonds gives
+        for the reference (with the same arguments): the same names, in
+        the same order, each with the same bonds in the same order, as
+        long as the bond lengths of this model stay within the ranges and
+        within discretization of those of the reference. So a distortion
+        that changes the lengths a little does not split, merge or reorder
+        the couplings. The distance of each coupling is the mean length of
+        its bonds in this model. What does not match is logged as a
+        warning: bonds of the reference out of the ranges here are left
+        out (a coupling left without bonds is dropped, and the following
+        ones keep their names); lengths farther than discretization from
+        the reference are kept; bonds within the ranges here that the
+        reference does not have go into couplings of their own, after
+        those of the reference.
+        """
+        if reference is None:
+            reference = self.reference_model
         if bond_names is None:
             bond_names = []
+
+        found = self._bonds_within(ranges)
+        if reference is None:
+            groups = _group_bonds(found, self.site_properties["magnetic_species"], discretization)
+            _extend_bond_names(bond_names, len(groups))
+            named = list(zip(bond_names, groups))
+        else:
+            named = self._bonds_like(reference, found, discretization, ranges, bond_names)
+
+        # Update the bonds dict.
+        bonds = self.bonds
+        logger.debug("current bonds: %s", bonds)
+        logger.debug("new bond names: %s", [name for name, _ in named])
+        for name, (dist, new_bonds) in named:
+            if name in bonds:
+                if abs(bonds[name]["distance"] - dist) > discretization:
+                    while name in bonds:
+                        name = "J" + name
+                else:
+                    # Only the bonds the coupling does not have yet (calling
+                    # generate_bonds twice used to duplicate them).
+                    present = set(bonds[name]["bonds"])
+                    bonds[name]["bonds"].extend(b for b in new_bonds if b not in present)
+                    continue
+            bonds[name] = {
+                "distance": dist,
+                "bonds": new_bonds,
+                "value": np.nan,
+            }
+
+    def _bonds_within(self, ranges):
+        """
+        {(i, j, offset tag): length} for the bonds of generate_bonds within
+        the ranges, in the order in which they are found.
+        """
 
         def is_in_range(val):
             for min_r, max_r in ranges:
@@ -809,12 +997,8 @@ class MagneticModel:
                     return True
             return False
 
-        def normalize_key(bond_distance):
-            return round(bond_distance / discretization) * discretization
-
-        # Collect bonds
-        new_bonds = {}
-        positions = np.array(atomic_positions, dtype=float).reshape(-1, 3)
+        found = {}
+        positions = np.array(self.site_properties["coord_atomos"], dtype=float).reshape(-1, 3)
         lattice = np.array(self.lattice_properties["bravais_vectors"], dtype=float).reshape(-1, 3)
         for supercell_idx, i, j, rel_pos in _pairs_within(
             positions, lattice, max((r[1] for r in ranges), default=0.0)
@@ -838,36 +1022,83 @@ class MagneticModel:
                     "-5..4 that can be stored: use a shorter range, or a larger cell"
                 )
             logger.debug("bond between %s and %s (%s)", i, j, supercell_idx)
-            bound_type = tuple(sorted({atom_type[i], atom_type[j]}))
-            key = (normalize_key(distance), bound_type)
-            offset_key = pack_offset(supercell_idx)
-            new_bonds.setdefault(key, []).append((i, j, offset_key))
+            found[(i, j, pack_offset(supercell_idx))] = distance
+        return found
 
-        bn_index = 0
-        while len(new_bonds) > len(bond_names):
-            while "J" + str(bn_index + 1) in bond_names:
-                bn_index = bn_index + 1
-            logger.debug("adding %s", "J" + str(bn_index + 1))
-            bond_names.append("J" + str(bn_index + 1))
-
-        # Update the bonds dict.
-        logger.debug("current bonds: %s", bonds)
-        logger.debug("new bond names: %s", bond_names)
-
-        for name, dist_type in zip(bond_names, sorted(new_bonds)):
-            dist = dist_type[0]
-            if name in bonds:
-                if abs(bonds[name]["distance"] - dist) > discretization:
-                    while name in bonds:
-                        name = "J" + name
-                else:
-                    bonds[name]["bonds"].extend(new_bonds[dist_type])
-                    continue
-            bonds[name] = {
-                "distance": dist,
-                "bonds": new_bonds[dist_type],
-                "value": np.nan,
-            }
+    def _bonds_like(self, reference, found, discretization, ranges, bond_names):
+        """
+        For generate_bonds with a reference: [(name, (distance, bonds))],
+        the bonds found (as given by _bonds_within) grouped as the
+        couplings of the reference.
+        """
+        num_ref = len(reference.site_properties["coord_atomos"])
+        if num_ref != self.num_sites:
+            raise ValueError(
+                f"the reference model has {num_ref} sites; this model has "
+                f"{self.num_sites}: they must be the same sites, in the same order"
+            )
+        ref_found = _geometry_copy(reference)._bonds_within(ranges)
+        ref_groups = _group_bonds(
+            ref_found, reference.site_properties["magnetic_species"], discretization
+        )
+        _extend_bond_names(bond_names, len(ref_groups))
+        remaining = dict(found)
+        named, missing, stretched = [], [], []
+        for name, (_, ref_bonds) in zip(bond_names, ref_groups):
+            bonds = [bond for bond in ref_bonds if bond in remaining]
+            missing.extend(bond for bond in ref_bonds if bond not in remaining)
+            stretched.extend(
+                (bond, remaining[bond], ref_found[bond])
+                for bond in bonds
+                if abs(remaining[bond] - ref_found[bond]) > discretization
+            )
+            if not bonds:
+                logger.warning(
+                    "No bond of the coupling %s of the reference is within the "
+                    "ranges in this model: it is left out.",
+                    name,
+                )
+                continue
+            mean = np.mean([remaining.pop(bond) for bond in bonds])
+            named.append((name, (round(mean / discretization) * discretization, bonds)))
+        if missing:
+            logger.warning(
+                "%d bonds of the reference are not within the ranges in this "
+                "model, and are left out: %s. (Are the sites at the images "
+                "closest to those of the reference, as with "
+                "equivalent_model(..., align=True)?)",
+                len(missing),
+                _some(missing),
+            )
+        if stretched:
+            worst = max(stretched, key=lambda item: abs(item[1] - item[2]))
+            logger.warning(
+                "%d bonds differ in length from those of the reference by more "
+                "than %g, up to %.4g (bond %s: %.4f here, %.4f in the "
+                "reference); they are kept in the coupling of the reference.",
+                len(stretched),
+                discretization,
+                abs(worst[1] - worst[2]),
+                worst[0],
+                worst[1],
+                worst[2],
+            )
+        if remaining:
+            extra = _group_bonds(
+                remaining, self.site_properties["magnetic_species"], discretization
+            )
+            logger.warning(
+                "%d bonds are within the ranges in this model but not in the "
+                "reference: they form %d new couplings: %s",
+                len(remaining),
+                len(extra),
+                _some(list(remaining)),
+            )
+            used = list(bond_names)
+            _extend_bond_names(used, len(ref_groups) + len(extra))
+            named.extend(zip(used[len(ref_groups):], extra))
+            bond_names[:] = used
+        return named
 
     def formatted_equations(
         self, coeff_matrix, ensname=None, comments=None, eq_format="plain"

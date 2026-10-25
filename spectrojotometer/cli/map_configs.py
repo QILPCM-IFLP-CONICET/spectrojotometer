@@ -74,6 +74,15 @@ be represented: they are written as comments.
         "sites of the target (its own positions and couplings) to this CIF file",
     )
     parser.add_argument(
+        "--align",
+        action="store_true",
+        help="with --model-out: move the saved model rigidly onto the target "
+        "(rotated and translated), each site at the image closest to its site "
+        "of the target, instead of in the frame of the source and wrapped into "
+        "the cell. Then bond_generator --reference with the target gives the "
+        "couplings of the target, in the same order",
+    )
+    parser.add_argument(
         "--fill",
         type=int,
         choices=[0, 1],
@@ -117,7 +126,7 @@ be represented: they are written as comments.
     if args["model_out"]:
         try:
             equivalent_model(
-                modelin, modelout, args["tol"], method=args["method"]
+                modelin, modelout, args["tol"], method=args["method"], align=args["align"]
             ).save_cif(args["model_out"])
         except ValueError as error:
             eprint(f"map_configs: cannot write {args['model_out']}: {error}")

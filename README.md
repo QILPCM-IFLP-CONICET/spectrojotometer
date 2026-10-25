@@ -335,7 +335,8 @@ them are described below.
 
 *) bond_generator: 
 
-   usage: bond_generator [-h] [-d [value]] [--rmin [value]] [--rmax [value]] [-v]
+   usage: bond_generator [-h] [-d [value]] [--rmin [value]] [--rmax [value]]
+                         [--reference modelfile] [--replace] [-v]
                          modelfile outfile
 
    From an standard cif file, produces a new cif file containing information
@@ -355,6 +356,15 @@ them are described below.
                            same.
      --rmin [value]        the minimal distance between atoms of the bond
      --rmax [value]        the maximal distance between atoms of the bond
+     --reference modelfile
+                           a model with the same sites, in the same order and at
+                           nearby positions (e.g. the target of map_configs
+                           --align --model-out): the couplings are those
+                           generated for it, with the same names, bonds and
+                           order, as long as the bond lengths stay within the
+                           discretization
+     --replace             discard the bonds of the input file: the output has
+                           only the generated ones
      -v, --verbose         Show progress messages (-v) or detailed diagnostics
                            (-vv).
 
@@ -504,7 +514,7 @@ As an example, by run
 *) map_configs
 
     usage: map_configs [-h] [--tol tolerance] [--method {auto,position,structure}]
-                       [--model-out cif file] [--fill {0,1}] [-v]
+                       [--model-out cif file] [--align] [--fill {0,1}] [-v]
                        modelfile1 modelfile2 conffile outfile
 
     Translate the spin configurations of a source model into configurations of a
@@ -533,6 +543,12 @@ As an example, by run
       --model-out cif file  also save the source model rewritten in the cell and
                             order of sites of the target (its own positions and
                             couplings) to this CIF file
+      --align               with --model-out: move the saved model rigidly onto
+                            the target (rotated and translated), each site at the
+                            image closest to its site of the target, instead of in
+                            the frame of the source and wrapped into the cell.
+                            Then bond_generator --reference with the target gives
+                            the couplings of the target, in the same order
       --fill {0,1}          spin for the sites of the target without counterpart
                             in the source (by default, such sites are an error)
       -v, --verbose         Show progress messages (-v) or detailed diagnostics
@@ -563,6 +579,18 @@ As an example, by run
     target, so that the configurations of the target apply to it directly
     (magnetic_model.equivalent_model; in visualbond, "Export transformed
     model..." in the import window).
+
+    With --model-out and --align, the saved model is moved rigidly onto the
+    target (rotated so that its Bravais vectors point as those of the target,
+    and translated), and each site is the image closest to its site of the
+    target instead of being wrapped into the cell (equivalent_model(...,
+    align=True)). Then bond_generator --reference, with the target, gives the
+    couplings of the target: the same names and bonds, in the same order,
+    even if the distortion changes the bond lengths a little (more than the
+    discretization is reported, and the bonds are kept):
+
+    map_configs distorted.cif reference.cif distorted.spin mapped.spin --align --model-out aligned.cif
+    bond_generator aligned.cif aligned-bonds.cif --reference reference.cif --replace -d 0.02 --rmax 3.5
 
 
 *) print_equations

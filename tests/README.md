@@ -80,6 +80,11 @@ The model (`spectrojotometer/magnetic_model.py`):
   range, against a brute-force search: ranges longer than the cell, sites
   outside the cell, oblique cells, chains and rings, offsets that cannot be
   stored.
+- `test_examples_zncr2o4.py` — the ZnCr2O4 examples: the cubic CIF and the
+  three relaxed WIEN2k cells are read, aligned onto the cubic cell
+  (`equivalent_model(..., align=True)`), and give the J1 bond length
+  changes shown in the README and, with `generate_bonds`, the J1 of the
+  cubic model; the snippet of the README runs.
 - `test_cif_offset_convention.py` — cell shifts of the bonds in CIF files:
   `save_cif` writes standard codes and the models come back with the same
   bonds and lengths (both readers; a cubic cell, the spinel up to third

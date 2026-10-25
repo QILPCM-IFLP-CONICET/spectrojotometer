@@ -152,6 +152,12 @@ Changes
   out; a coupling left empty is dropped, and the others keep their
   names), bonds not in the reference (new couplings, after the others).
   ``bond_generator --replace`` discards the bonds of the input file.
+* Examples: the Cr sublattice of ZnCr2O4, the cubic cell with its
+  couplings (``ZnCr2O4_cubica.cif``) and three cells relaxed by DFT
+  (``ZnCr2O4_FERRO``, ``_ORTOFERRO`` and ``_TETRAFERRO.struct``). The
+  README shows how to compare the J1 bond lengths of the relaxed cells
+  with those of the cubic one, with ``equivalent_model(...,
+  align=True)``.
 * CIF files, cell shifts of the bonds: ``save_cif`` wrote the code of
   each bond with the shift itself in each digit (``1_100`` for one cell
   along a, ``1_090`` for one cell back along b), while the readers

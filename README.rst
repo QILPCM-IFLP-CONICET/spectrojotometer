@@ -254,6 +254,62 @@ amplified, while the question here is how large the absolute error of
 each coupling is.
 
 
+Comparing distorted phases
+==========================
+
+The examples include the Cr sublattice of the spinel ZnCr2O4: the cubic
+cell with its couplings J1, J2, J3a and J3b (``ZnCr2O4_cubica.cif``, 16 Cr)
+and three cells relaxed by DFT (WIEN2k) in ferromagnetic configurations:
+cubic (``ZnCr2O4_FERRO.struct``), orthorhombic (``ZnCr2O4_ORTOFERRO.struct``)
+and a tetragonal cell of half the volume, rotated 45 degrees about c
+(``ZnCr2O4_TETRAFERRO.struct``, 8 Cr). ``equivalent_model(..., align=True)``
+rewrites each relaxed cell in the cell and order of sites of the cubic
+one, moved rigidly onto it, each site at the image closest to its cubic
+site; so every bond of the cubic model, ``(i, j, cell shift)``, is the
+same bond in the relaxed one, and the changes of the J1 bond lengths
+are:
+
+.. code-block:: python
+
+    import numpy as np
+    from spectrojotometer.magnetic_model import equivalent_model
+    from spectrojotometer.model_io import magnetic_model_from_file
+    from spectrojotometer.tools import unpack_offset
+
+    cubic = magnetic_model_from_file("examples/ZnCr2O4_cubica.cif")
+
+
+    def length(model, bond):
+        i, j, tag = bond
+        positions = np.array(model.site_properties["coord_atomos"])
+        lattice = np.array(model.lattice_properties["bravais_vectors"])
+        return np.linalg.norm(positions[j] + unpack_offset(tag) @ lattice - positions[i])
+
+
+    for name in ("FERRO", "ORTOFERRO", "TETRAFERRO"):
+        relaxed = magnetic_model_from_file(f"examples/ZnCr2O4_{name}.struct")
+        aligned = equivalent_model(relaxed, cubic, align=True)
+        changes = [length(aligned, b) - length(cubic, b) for b in cubic.bonds["J1"]["bonds"]]
+        milli = np.round(1000 * np.array(changes), 1) + 0.0  # in mÅ; + 0.0: no -0.0
+        values, counts = np.unique(milli, return_counts=True)
+        print(name, dict(zip(values.tolist(), counts.tolist())))
+
+prints::
+
+    FERRO {-0.7: 10, -0.6: 6, 0.0: 16, 0.6: 4, 0.7: 12}
+    ORTOFERRO {-5.5: 16, -1.4: 16, 1.4: 16}
+    TETRAFERRO {-2.5: 32, -0.1: 8, 0.0: 8}
+
+In mÅ: in the orthorhombic cell, the bonds in the xy, xz and yz planes
+change by -5.5, -1.4 and +1.4 mÅ (a < b < c); in the tetragonal one, the
+bonds with a component along c shorten by 2.5 mÅ (c contracts to
+8.313 Å), those in the xy plane barely change. With the aligned model,
+``generate_bonds`` gives the couplings of the cubic model, with the same
+names and bonds, in the same order (see ``generate_bonds(...,
+reference=...)``); from the command line, ``map_configs --align
+--model-out`` and ``bond_generator --reference``.
+
+
 Monte Carlo simulation
 ======================
 

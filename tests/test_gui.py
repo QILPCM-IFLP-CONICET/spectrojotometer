@@ -587,3 +587,53 @@ def test_export_with_an_edited_site_map(app, monkeypatch, tmp_path):
         assert not out.exists()
     finally:
         window.close_window()
+
+
+def test_export_aligned_onto_the_current_model(app, monkeypatch, tmp_path):
+    """"Align onto the current model": the exported model is moved onto
+    the current one, each site next to its site, so the bonds of the
+    current model (i, j, cell shift) are the same bonds in it. Without
+    it, the tetragonal cell (aligned by StructureMatcher) is exported in
+    its own frame, wrapped into the cell."""
+    from spectrojotometer.gui import importconfig
+    from spectrojotometer.model_io import magnetic_model_from_file
+    from spectrojotometer.tools import unpack_offset
+
+    cubic = EXAMPLES / "ZnCr2O4_cubica.cif"
+    tetragonal = EXAMPLES / "ZnCr2O4_TETRAFERRO.struct"
+    window = open_import_window(app, monkeypatch, cubic, [tetragonal], primitive=False)
+    outputs = iter([tmp_path / "plain.cif", tmp_path / "aligned.cif"])
+    monkeypatch.setattr(importconfig.fdlg, "asksaveasfilename", lambda **k: str(next(outputs)))
+    errors = []
+    monkeypatch.setattr(importconfig.messagebox, "showerror", lambda *a, **k: errors.append(a))
+    check = find_widget(window, tkinter.Checkbutton, "Align onto the current model")
+    try:
+        assert not window.align_var.get()  # off by default, as before
+        window.export_model()  # asks for the other model first
+        check.invoke()
+        assert window.align_var.get()
+        window.export_model()
+        assert not errors
+    finally:
+        window.close_window()
+
+    current = app.model
+    targets = np.array(current.site_properties["coord_atomos"], dtype=float)
+
+    def distances(path):
+        model = magnetic_model_from_file(str(path))
+        return model, np.linalg.norm(
+            np.array(model.site_properties["coord_atomos"], dtype=float) - targets, axis=1
+        )
+
+    plain, far = distances(tmp_path / "plain.cif")
+    aligned, near = distances(tmp_path / "aligned.cif")
+    assert far.max() > 1.0
+    assert near.max() < 0.02
+    positions = np.array(aligned.site_properties["coord_atomos"], dtype=float)
+    lattice = np.array(aligned.lattice_properties["bravais_vectors"], dtype=float)
+    lengths = [
+        np.linalg.norm(positions[j] + unpack_offset(tag) @ lattice - positions[i])
+        for i, j, tag in current.bonds["J1"]["bonds"]
+    ]
+    np.testing.assert_allclose(lengths, 2.944, atol=0.005)

@@ -140,7 +140,8 @@ Changes
   the cell (with the structure alignment, the result was rotated and
   translated with respect to the target, and its sites were images far
   from those of the target). The result keeps the geometry of the target
-  as ``reference_model``.
+  as ``reference_model``. In visualbond, "Align onto the current model"
+  next to "Export transformed model..." in the import window.
 * ``generate_bonds(..., reference=...)`` (``bond_generator
   --reference``): the couplings of a reference model with the same sites
   (by default ``reference_model``, set by ``equivalent_model(...,

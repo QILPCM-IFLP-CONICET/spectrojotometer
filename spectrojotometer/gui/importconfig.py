@@ -132,6 +132,12 @@ class ImportConfigWindow(Toplevel):
             text="Export transformed model...",
             command=self.export_model,
         ).pack(side=RIGHT)
+        # Export the model moved rigidly onto the current one, each site at
+        # the image closest to its site (equivalent_model(align=True)).
+        self.align_var = BooleanVar(value=False)
+        Checkbutton(
+            framebts, text="Align onto the current model", variable=self.align_var
+        ).pack(side=RIGHT)
         framebts.pack(side=BOTTOM, fill=X)
         self.grab_set()
         app.root.wait_window(self)
@@ -283,6 +289,13 @@ class ImportConfigWindow(Toplevel):
         positions and couplings, with the sites of the current model (see
         magnetic_model.equivalent_model). If the site map was edited, its
         sites follow the edited map, as the imported configurations.
+
+        With "Align onto the current model" checked, the model is moved
+        rigidly onto the current one (rotated and translated) and each site
+        is the image closest to its site of the current model, instead of
+        being in the frame of the other model and wrapped into the cell
+        (equivalent_model(..., align=True)): each bond (i, j, cell shift)
+        of the current model is then the same bond in the exported one.
         """
         if not self._ensure_model():
             return
@@ -293,8 +306,9 @@ class ImportConfigWindow(Toplevel):
             shown = [int(x) for x in self.sitemap.get().replace(",", " ").split()]
             automatic = site_maps(source, target, tol)[0]
             edited = bool(shown) and shown != list(automatic)
+            align = self.align_var.get()
             model = equivalent_model(
-                source, target, tol, mapping=shown if edited else None
+                source, target, tol, mapping=shown if edited else None, align=align
             )
         except ValueError as error:
             messagebox.showerror(
@@ -313,10 +327,11 @@ class ImportConfigWindow(Toplevel):
             return
         model.save_cif(filename)
         logger.info(
-            "%s, in the cell and order of sites of the current model%s, saved "
-            "to %s (%d sites, couplings %s).",
+            "%s, in the cell and order of sites of the current model%s%s, "
+            "saved to %s (%d sites, couplings %s).",
             name,
             " (with the edited site map)" if edited else "",
+            ", aligned onto it" if align else "",
             filename,
             len(model.site_properties["coord_atomos"]),
             list(model.bonds),

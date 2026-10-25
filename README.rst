@@ -680,7 +680,9 @@ map_configs
     align=True)). Then bond_generator --reference, with the target, gives the
     couplings of the target: the same names and bonds, in the same order,
     even if the distortion changes the bond lengths a little (more than the
-    discretization is reported, and the bonds are kept):
+    discretization is reported, and the bonds are kept). In visualbond,
+    check "Align onto the current model" next to "Export transformed
+    model..." in the import window; from the command line:
 
     map_configs distorted.cif reference.cif distorted.spin mapped.spin --align --model-out aligned.cif
     bond_generator aligned.cif aligned-bonds.cif --reference reference.cif --replace -d 0.02 --rmax 3.5

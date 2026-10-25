@@ -199,7 +199,12 @@ def magnetic_model_from_cif_pymatgen(
             )
         else:
             bond_labels, bond_distances, bondlists = cif_read_loop_bonds(
-                bond_atom_labels, bond_entries, atomlabels, symmetries, magnetic_positions
+                bond_atom_labels,
+                bond_entries,
+                atomlabels,
+                symmetries,
+                magnetic_positions,
+                conventional_vectors,
             )
             # Unlike the hand-written reader, there's no need to call
             # `cif.expand_symmetries_with_centering` here:

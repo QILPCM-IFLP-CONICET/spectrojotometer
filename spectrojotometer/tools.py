@@ -265,6 +265,9 @@ def pack_offset(r_list: list) -> str:
         the offset representation.
 
     """
+    # This is the tag of a bond in memory (MagneticModel.bonds). CIF
+    # files use the standard code n_klm (shift + 5), written by
+    # MagneticModel.save_cif and read by model_io.cif.
     # Codificación del offset:
     # El offset se especifica con `1_` seguido de
     # digitos, cada uno correspondiente a un índice.

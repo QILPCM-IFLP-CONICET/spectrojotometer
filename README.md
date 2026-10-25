@@ -51,6 +51,14 @@ Loading models: conventional vs. primitive cell
   spinel lattice like ZnCr2O4), which is useful when enumerating spin
   configurations.
 
+Bonds in CIF files: `save_cif` writes each bond with the standard
+`_geom_bond_site_symmetry_2` code `n_klm` for the cell of its second
+site: the identity operator `n` and the shift + 5 along each axis
+(`1_655` for one cell along a, `1_545` for one cell back along b, `.`
+for none). Files written by earlier versions used each digit for the
+shift itself (`1_100`, `1_090`): they are still read, with a warning;
+the convention is recognised by the declared bond lengths.
+
 WIEN2k `.struct` files are read too (`magnetic_model_from_file` picks
 the reader by the extension). Their lengths are in bohr unless the file
 says `unit=ang`; the model is in angstrom, like the ones read from CIF

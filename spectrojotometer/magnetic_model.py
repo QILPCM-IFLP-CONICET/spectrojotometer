@@ -353,6 +353,19 @@ def _cif_value(text):
     return "'" + text.replace("'", "") + "'"
 
 
+def _cif_symmetry_code(tag, identity=1):
+    """
+    The standard CIF code (_geom_bond_site_symmetry_2, n_klm) of a bond
+    tag: "." without a cell shift, otherwise the operator n (the
+    identity) and the shift + 5 along each of three axes.
+    """
+    offset = _bond_offset(tag)
+    if not offset.any():
+        return "."
+    offset = np.pad(offset, (0, 3 - len(offset)))
+    return f"{identity}_" + "".join(str(int(n) + 5) for n in offset)
+
+
 def _bond_offset(tag):
     """The lattice offset of a bond, from its tag (see pack_offset)."""
     if tag is None or (isinstance(tag, str) and tag in (".", "")):
@@ -1987,6 +2000,17 @@ _chemical_name_common                  """
             fileout.write("   \n")
 
             if len(self.bonds) > 0:
+                # The cell shift of the second site, as a standard CIF
+                # symmetry code n_klm: the identity operator n and the
+                # shift + 5 along each axis (5 = none).
+                identity = next(
+                    (
+                        k + 1
+                        for k, (rot, trans) in enumerate(symmetries)
+                        if np.allclose(rot, np.eye(3)) and np.allclose(trans, 0)
+                    ),
+                    1,
+                )
                 fileout.write("# Bonds  \n")
                 fileout.write("loop_\n")
                 fileout.write("_geom_bond_atom_site_label_1\n")
@@ -2004,7 +2028,7 @@ _chemical_name_common                  """
                             f"{magnetic_species[dest]}{dest+1}\t"
                             f"{distance}\t"
                             f"{bond_name}\t"
-                            f"{offset}\n"
+                            f"{_cif_symmetry_code(offset, identity)}\n"
                         )
                         fileout.write(line)
                 fileout.write("   \n")

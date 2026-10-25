@@ -34,6 +34,14 @@ in the CIF's asymmetric unit (e.g. 4 instead of 16 for ZnCr2O4) and
 switches the model's Bravais vectors to a primitive basis, instead of
 expanding atoms to fill the conventional cell.
 
+Bonds in CIF files: `save_cif` writes each bond with the standard
+`_geom_bond_site_symmetry_2` code `n_klm` for the cell of its second
+site: the identity operator `n` and the shift + 5 along each axis
+(`1_655` for one cell along a, `1_545` for one cell back along b, `.`
+for none). Files written by earlier versions used each digit for the
+shift itself (`1_100`, `1_090`): they are still read, with a warning;
+the convention is recognised by the declared bond lengths.
+
 WIEN2k `.struct` files are read too. Their lengths are in bohr unless the
 file says `unit=ang`, and the model is in angstrom, like the ones read
 from CIF files; for centred lattices, `primitive_cell` chooses between

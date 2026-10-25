@@ -418,15 +418,19 @@ def cif_read_loop_atoms(labels: list, entries: list, magnetic_atoms: tuple) -> t
         spin_repr,
     )
 
-def _bond_endpoint(label, code, atomlabels, symmetries, magnetic_positions, tol=1.0e-3):
+def _bond_endpoint(
+    label, code, atomlabels, symmetries, magnetic_positions, tol=1.0e-3, quiet=False
+):
     """
     (site, cell offset) of the atom at the end of a bond, given by its
     label and its `_geom_bond_site_symmetry` code (`n_klm`, or "."), or
-    None (with a warning) if the operator is not in the file or the image
-    is not an atom of the model.
+    None (with a warning, unless quiet) if the operator is not in the file
+    or the image is not an atom of the model.
     """
     sym, cell = unpack_symmetry_and_offset(code)
     if not 0 <= sym < len(symmetries):
+        if quiet:
+            return None
         logger.warning(
             "bond to %s skipped: the symmetry code %r refers to operator %d, "
             "and the file has %d",
@@ -438,6 +442,8 @@ def _bond_endpoint(label, code, atomlabels, symmetries, magnetic_positions, tol=
     site, offset = find_atom_offset_by_symmetry(base, symop, magnetic_positions)
     image = symop[0].dot(base) + symop[1]
     if np.linalg.norm(image - magnetic_positions[site] - offset) > tol:
+        if quiet:
+            return None
         logger.warning(
             "bond to %s skipped: its image by operator %d (%r) is not an atom "
             "of the model",
@@ -447,12 +453,140 @@ def _bond_endpoint(label, code, atomlabels, symmetries, magnetic_positions, tol=
     return site, offset + np.asarray(cell, dtype=int)
 
 
+def standard_symmetry_code(code: str) -> str:
+    """
+    A `_geom_bond_site_symmetry` code written in the old convention of
+    spectrojotometer (`n_xyz`, each digit the cell shift: 0 = none,
+    1 = +1, ..., 9 = -1), rewritten in the CIF standard (`n_klm`, each
+    digit the shift + 5: 5 = none). "." and codes without cell digits
+    are returned unchanged.
+    """
+    parts = code.split("_")
+    if len(parts) != 2 or not parts[1].isdigit():
+        return code
+    return parts[0] + "_" + "".join(str((int(c) + 5) % 10) for c in parts[1])
+
+
+def _symmetry_code_columns(labels):
+    return [
+        i
+        for i, tag in enumerate(labels)
+        if tag in ("_geom_bond_site_symmetry_1", "_geom_bond_site_symmetry_2")
+    ]
+
+
+def _with_standard_symmetry_codes(labels, entries, length=None, tol=0.01):
+    """
+    The entries of a `_geom_bond` loop, with their symmetry codes in the
+    CIF standard: if the file uses the old convention of spectrojotometer
+    (see standard_symmetry_code), they are rewritten, with a warning.
+
+    The convention is decided for the whole loop. If `length(entry)` is
+    given (the length of the bond of an entry, or None if it cannot be
+    computed), by the number of bonds whose length agrees with the
+    declared `_geom_bond_distance` in each reading; without it, or on a
+    tie, by the size of the cell shifts (the old codes of short bonds
+    read as standard ones give shifts of 4 or 5 cells, and vice versa).
+    """
+    columns = _symmetry_code_columns(labels)
+    if not columns or "_geom_bond_distance" not in labels:
+        return entries
+    distcol = labels.index("_geom_bond_distance")
+    converted = []
+    for entry in entries:
+        entry = list(entry)
+        for col in columns:
+            entry[col] = standard_symmetry_code(entry[col])
+        converted.append(entry)
+    if all(
+        entry[col] == new[col] for entry, new in zip(entries, converted) for col in columns
+    ):
+        return entries  # no cell shifts at all
+
+    def shifts(rows):
+        total = 0
+        for row in rows:
+            for col in columns:
+                total += int(np.abs(unpack_symmetry_and_offset(row[col])[1]).max())
+        return total
+
+    def matches(rows):
+        count = 0
+        for row in rows:
+            try:
+                declared = float(row[distcol].split("(")[0])
+            except ValueError:
+                continue
+            value = length(row)
+            if value is not None and abs(value - declared) <= max(tol, 1e-3 * declared):
+                count += 1
+        return count
+
+    old = None
+    if length is not None:
+        standard_matches, old_matches = matches(entries), matches(converted)
+        if standard_matches != old_matches:
+            old = old_matches > standard_matches
+    if old is None:
+        old = shifts(converted) < shifts(entries)
+    if not old:
+        return entries
+    logger.warning(
+        "The bonds of this CIF file give their cell shifts "
+        "(_geom_bond_site_symmetry) in the old convention of spectrojotometer "
+        "(each digit the shift: 0 = none, 1 = +1, 9 = -1), not in the CIF "
+        "standard (each digit the shift + 5): they are read as such. Saving "
+        "the model writes standard codes."
+    )
+    return converted
+
+
+def _bond_length_function(labels, atomlabels, symmetries, magnetic_positions, bravais_vectors):
+    """For _with_standard_symmetry_codes: the length of the bond of an
+    entry (positions in fractional coordinates), or None."""
+    if bravais_vectors is None or magnetic_positions is None or symmetries is None:
+        return None
+    lattice = np.asarray(bravais_vectors, dtype=float)
+    positions = np.asarray(magnetic_positions, dtype=float)
+    symops = symmetries if len(symmetries) else [(np.eye(3), np.zeros(3))]
+    at1 = labels.index("_geom_bond_atom_site_label_1")
+    at2 = labels.index("_geom_bond_atom_site_label_2")
+    cols = {
+        tag: labels.index(tag) if tag in labels else -1
+        for tag in ("_geom_bond_site_symmetry_1", "_geom_bond_site_symmetry_2")
+    }
+
+    def length(entry):
+        ends = []
+        for label, tag in ((entry[at1], "_geom_bond_site_symmetry_1"),
+                           (entry[at2], "_geom_bond_site_symmetry_2")):
+            if label not in atomlabels:
+                return None
+            code = entry[cols[tag]] if cols[tag] != -1 else "."
+            end = _bond_endpoint(label, code, atomlabels, symops, positions, quiet=True)
+            if end is None:
+                return None
+            ends.append(positions[end[0]] + end[1])
+        return float(np.linalg.norm((ends[1] - ends[0]) @ lattice))
+
+    return length
+
+
+def _bravais_vectors_or_none(bravais_params):
+    """The Bravais vectors, or None if the cell is not (yet) complete."""
+    try:
+        return read_bravais_vectors(bravais_params)
+    except (KeyError, ValueError, TypeError, IndexError):
+        return None
+
+
 def cif_read_loop_bonds(
     labels: list,
     entries: list,
     atomlabels: list,
     symmetries: list | None = None,
     magnetic_positions: list | None = None,
+    bravais_vectors=None,
 ) -> tuple:
     """
     Parse the `_geom_bond` loop of a CIF file into normalized bonds,
@@ -552,6 +686,13 @@ def cif_read_loop_bonds(
     geometric = symmetries is not None and magnetic_positions is not None
     if geometric and len(symmetries) == 0:
         symmetries = [(np.eye(3), np.zeros(3))]  # no symmetry loop: P1
+    entries = _with_standard_symmetry_codes(
+        labels,
+        entries,
+        _bond_length_function(
+            labels, atomlabels, symmetries, magnetic_positions, bravais_vectors
+        ) if geometric else None,
+    )
     for en in entries:
         label1 = en[at1col]
         label2 = en[at2col]
@@ -810,6 +951,7 @@ def cif_read_loop_bonds_compact(
         `offset` expressed in the primitive basis.
     """
     logger.debug("reading bonds from cif (compact/primitive mode)")
+    entries = _with_standard_symmetry_codes(labels, entries)
     jlabelcol = None
     bondlists = []
     bond_distances = []
@@ -1294,7 +1436,12 @@ def magnetic_model_from_cif(
                             bond_distances,
                             bondlists,
                         ) = cif_read_loop_bonds(
-                            labels, entries, atomlabels, symmetries, magnetic_positions
+                            labels,
+                            entries,
+                            atomlabels,
+                            symmetries,
+                            magnetic_positions,
+                            _bravais_vectors_or_none(bravais_params),
                         )
                         # Atoms are taken exactly as given in the CIF (no
                         # expansion). For finding *equivalent bonds*, however,

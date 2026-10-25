@@ -80,6 +80,11 @@ The model (`spectrojotometer/magnetic_model.py`):
   range, against a brute-force search: ranges longer than the cell, sites
   outside the cell, oblique cells, chains and rings, offsets that cannot be
   stored.
+- `test_cif_offset_convention.py` — cell shifts of the bonds in CIF files:
+  `save_cif` writes standard codes and the models come back with the same
+  bonds and lengths (both readers; a cubic cell, the spinel up to third
+  neighbours, a supercell); files in the old convention are recognised by
+  the declared lengths, read with a warning and saved in the standard one.
 - `test_cif_bond_symmetry.py` — CIF bonds declared through symmetry codes
   (`_geom_bond_site_symmetry`), with both readers, against all the pairs of
   sites at each distance found by brute force (a spinel and a hexagonal

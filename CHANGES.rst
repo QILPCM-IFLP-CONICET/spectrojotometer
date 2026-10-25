@@ -152,6 +152,21 @@ Changes
   out; a coupling left empty is dropped, and the others keep their
   names), bonds not in the reference (new couplings, after the others).
   ``bond_generator --replace`` discards the bonds of the input file.
+* CIF files, cell shifts of the bonds: ``save_cif`` wrote the code of
+  each bond with the shift itself in each digit (``1_100`` for one cell
+  along a, ``1_090`` for one cell back along b), while the readers
+  (since they read ``_geom_bond_site_symmetry`` correctly) take the
+  standard ``n_klm``, shift + 5. A model saved and read back had its
+  bonds with a shift moved 4 or 5 cells away, or lost: the couplings and
+  the fits were right (they only depend on the sites of each bond), but
+  not the bond lengths, ``equivalent_model`` into a supercell, or the
+  model saved again (visualbondweb keeps its sessions as CIF files).
+  ``save_cif`` now writes standard codes (``1_655``; ``n`` is the
+  identity among the symmetries of the model). Files in the old
+  convention are still read by both readers, with a warning: the
+  convention of the file is the one that gives the declared bond
+  lengths (or, without them, the smaller shifts).
+  ``model_io.cif.standard_symmetry_code`` converts an old code.
 * ``generate_bonds`` called again on a model with couplings added the
   bonds a coupling already had once more (doubling their coefficients):
   it adds only the new ones.

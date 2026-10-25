@@ -1,6 +1,7 @@
 """
 Magnetic Model class
 """
+import itertools
 import logging
 import warnings
 
@@ -11,7 +12,6 @@ from .tools import (
     box_ellipse,
     compatibility_box,
     format_symmetry_operator,
-    offset_orientation,
     pack_offset,
     unpack_offset,
 )
@@ -551,6 +551,39 @@ def _edited_site_order(forward, mapping, positions, lattice, n_src, tol):
         )
     return [int(u) for u in order]
 
+def _pairs_within(positions, lattice, rmax, eps=1e-9):
+    """
+    (cell offset, i, j, vector) for the pairs of sites, j in the cell of
+    that offset, that can be closer than rmax: for each pair, the offsets
+    whose components are bounded by the dual lattice (|r . b_k| <= |r| |b_k|
+    for the dual vectors b_k), so none is missed whatever the positions
+    and the shape of the cell. The offsets are visited in the order of
+    supercell_iterator (the first axis fastest), over a box that covers
+    every pair. Works with fewer than three Bravais vectors (none: only
+    the pairs in the cell).
+    """
+    n_sites = len(positions)
+    if n_sites == 0:
+        return
+    if len(lattice) == 0:
+        for i, j in itertools.product(range(n_sites), repeat=2):
+            yield (), i, j, positions[j] - positions[i]
+        return
+    dual = np.linalg.pinv(lattice)  # r @ dual: coefficients of r in the lattice
+    reach = rmax * np.linalg.norm(dual, axis=0)
+    diffs = positions[None, :, :] - positions[:, None, :]  # [i, j] = p_j - p_i
+    coeffs = diffs @ dual
+    low = np.ceil(-reach - coeffs - eps).astype(int)
+    high = np.floor(reach - coeffs + eps).astype(int)
+    box = [range(int(low[..., k].min()), int(high[..., k].max()) + 1) for k in range(len(lattice))]
+    for reversed_offset in itertools.product(*box[::-1]):
+        offset = reversed_offset[::-1]
+        shift = np.array(offset) @ lattice
+        inside = np.all((low <= offset) & (high >= offset), axis=-1)
+        for i, j in zip(*np.nonzero(inside)):
+            yield list(offset), int(i), int(j), diffs[i, j] + shift
+
+
 def _clamp_supercell_size(supercell_size):
     """An int, or one value per axis; each clamped to 1..4."""
     logger.debug("supercell size: %s", supercell_size)
@@ -648,7 +681,9 @@ class MagneticModel:
         bond_lists, bond_names, bond_distances : the couplings, as lists of
             bonds ``(src, dest, offset)``, with their names (default
             ``J0, J1, ...``) and distances (default 0).
-        supercell_size : int or [sx, sy, sz], each value clamped to 1..4.
+        supercell_size : int or [sx, sy, sz], each value clamped to 1..4,
+            kept in lattice_properties. generate_bonds no longer uses it:
+            it searches every cell within the range of the bonds.
         magnetic_species : names of the species (default "X").
         g_lande_factors, spin_repr : per site values (default 2.0 and 1/2);
             strings are accepted, with "." meaning "not given". The given
@@ -748,15 +783,21 @@ class MagneticModel:
 
     def generate_bonds(self, discretization, ranges, bond_names=None):
         """
-        In base of the unit cell, the Bravais' lattice and the size of the
-        supercell (how many copies of the unit cell are considered as
-        "environment") compute the bonds, i.e. the pairs of magnetic sites
-        interacting according each of the coupling constants to be determined.
+        Add the bonds of the cell: every pair of magnetic sites, the second
+        one in any cell, at a distance within one of the ranges (a list of
+        [min, max]), once each (the pairs (i, j, n) and (j, i, -n) are the
+        same bond). Bonds are grouped into couplings by their distance
+        (rounded to discretization) and the species of their sites.
+
+        The neighbouring cells searched are the ones that can hold a site
+        closer than the largest range, whatever the positions (inside the
+        cell or not) and the shape of the cell; the supercell size of the
+        model does not limit them (it did: cells -1..1 by default, and
+        bonds were missing). Raises ValueError if a bond needs a cell
+        offset beyond -5..4, which cannot be stored.
         """
         atom_type = self.site_properties["magnetic_species"]
-        cell_size = self.lattice_properties["cell_size"]
         atomic_positions = self.site_properties["coord_atomos"]
-        supercell_size = self.lattice_properties["supercell_size"]
         bonds = self.bonds
 
         if bond_names is None:
@@ -773,28 +814,34 @@ class MagneticModel:
 
         # Collect bonds
         new_bonds = {}
-        for supercell_idx, sites_sc in supercell_iterator(
-            supercell_size,
-            atomic_positions,
-            self.lattice_properties["bravais_vectors"],
+        positions = np.array(atomic_positions, dtype=float).reshape(-1, 3)
+        lattice = np.array(self.lattice_properties["bravais_vectors"], dtype=float).reshape(-1, 3)
+        for supercell_idx, i, j, rel_pos in _pairs_within(
+            positions, lattice, max((r[1] for r in ranges), default=0.0)
         ):
-            for i, pos_i in enumerate(atomic_positions):
-                for j, pos_j in enumerate(sites_sc):
-                    logger.debug("pair %s, supercell %s", [i, j], supercell_idx)
-                    rel_pos = pos_j - pos_i
-                    orientation = offset_orientation(rel_pos)
-                    if orientation < 0:
-                        continue
-                    distance = np.linalg.norm(rel_pos)
-                    logger.debug("   distance %s", distance)
-                    if not is_in_range(distance):
-                        continue
-
-                    logger.debug("bond between %s and %s (%s)", i, j, supercell_idx)
-                    bound_type = tuple(sorted({atom_type[i], atom_type[j]}))
-                    key = (normalize_key(distance), bound_type)
-                    offset_key = pack_offset(supercell_idx)
-                    new_bonds.setdefault(key, []).append((i, j % cell_size, offset_key))
+            logger.debug("pair %s, supercell %s", [i, j], supercell_idx)
+            # (i, j, n) and (j, i, -n) are the same bond: keep the one with
+            # i < j or, for a site and its own image, the offset whose first
+            # nonzero component is positive (as normalize_bond). Exact: the
+            # orientation of the vector (by the sign of its last component)
+            # depended on rounding errors when that component was zero.
+            if i > j or (i == j and next((n for n in supercell_idx if n), 0) <= 0):
+                continue
+            distance = np.linalg.norm(rel_pos)
+            logger.debug("   distance %s", distance)
+            if not is_in_range(distance):
+                continue
+            if any(n < -5 or n > 4 for n in supercell_idx):
+                raise ValueError(
+                    f"the bond between sites {i} and {j} (length {distance:.4g}) "
+                    f"needs the cell offset {list(supercell_idx)}, beyond the "
+                    "-5..4 that can be stored: use a shorter range, or a larger cell"
+                )
+            logger.debug("bond between %s and %s (%s)", i, j, supercell_idx)
+            bound_type = tuple(sorted({atom_type[i], atom_type[j]}))
+            key = (normalize_key(distance), bound_type)
+            offset_key = pack_offset(supercell_idx)
+            new_bonds.setdefault(key, []).append((i, j, offset_key))
 
         bn_index = 0
         while len(new_bonds) > len(bond_names):

@@ -46,6 +46,21 @@ Changes
   model (it used ``model.cell_size``, always 0, so it did not pad), and
   ``optimize-configurations`` writes ``# <label>`` for every
   configuration.
+* ``generate_bonds`` missed bonds: it searched the neighbouring cells
+  -1..1 (the supercell size of the model) around the stored positions.
+  When the range of the bonds was longer than the cell (e.g. a
+  primitive bcc cell of 2.86 A and a range of 7 A: 13 bonds instead of
+  68), when a site was stored outside the cell (as after a symmetry
+  expansion, e.g. (-1/3, -2/3, z) in a hexagonal structure), or in a
+  very oblique cell. It now searches, for each pair of sites, every cell
+  that can hold a site closer than the largest range (bounded through
+  the dual lattice): all the bonds that contribute to the energy of the
+  cell, checked against a brute-force search. ``supercell_size`` no
+  longer limits it (it is kept, unused). Each bond is kept once, as
+  ``normalize_bond`` writes it (i < j, or the first nonzero component of
+  the offset positive); choosing by the orientation of the vector
+  depended on rounding errors. A bond whose cell offset cannot be stored
+  (beyond -5..4; ``pack_offset`` wrapped it) is an error.
 * CIF bonds declared through symmetry codes
   (``_geom_bond_site_symmetry_1``/``_2``, ``n_klm``: the image of an
   atom by the n-th operator of the file, moved by ``klm - 555`` cells)

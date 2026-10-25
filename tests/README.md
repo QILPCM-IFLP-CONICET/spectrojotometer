@@ -70,6 +70,10 @@ The model (`spectrojotometer/magnetic_model.py`):
   search on a small model, and the 5% rule for the number of
   configurations).
 - `test_model_mapping.py` — `site_map` and `map_configurations`.
+- `test_generate_bonds.py` — `generate_bonds` finds every bond within the
+  range, against a brute-force search: ranges longer than the cell, sites
+  outside the cell, oblique cells, chains and rings, offsets that cannot be
+  stored.
 - `test_cif_bond_symmetry.py` — CIF bonds declared through symmetry codes
   (`_geom_bond_site_symmetry`), with both readers, against all the pairs of
   sites at each distance found by brute force (a spinel and a hexagonal
